@@ -1,6 +1,35 @@
 # spring-delivery-docs
 
-> 一句话让 Claude Code 从 Spring Boot 源码生成甲方要的交付文档：接口文档、数据库设计文档、部署运维手册、版本变更说明。
+> 给外包和项目制 Java 团队的 Claude Code 技能包，覆盖从需求评审到验收交付的文档工作。
+
+| Skill | 阶段 | 输入 → 输出 |
+|---|---|---|
+| [`spring-detailed-design`](#spring-detailed-design需求--详细设计) | 开发前 | 需求文档 → 详细设计（业务确认 + 技术设计），以及评审用的待澄清问题清单 |
+| [`spring-delivery-docs`](#spring-delivery-docs代码--交付文档) | 验收时 | 源码 → 接口文档、数据库设计文档、部署运维手册、版本变更说明 |
+
+两个 skill 共用同一个代码扫描器，所以设计文档可以直接和代码比对开发进度。
+
+## spring-detailed-design：需求 → 详细设计
+
+返工最多的地方在于：需求文档写“支持优惠券”，开发按自己的理解做，验收时才发现对不上。这个 skill 把这类偏差提前到写代码之前解决：
+
+```
+你：这是运营给的优惠券需求文档，出个详细设计，周三要和他们评审
+Claude：拆出 11 条需求、19 条验收标准；有 12 个问题需要运营确认，
+        其中 6 个阻塞开发（适用范围、有效期形式、能否叠加……），
+        每个问题都附了选项和建议。设计中按建议方案写，并标注了【假设】。
+```
+
+- **业务确认部分**：业务方能看懂，没有类名。包括需求清单 R-xx、业务规则、流程图和状态图、验收标准 AC-xx、待澄清问题 Q-xx。评审会上逐条过，业务方签字确认。
+- **技术设计部分**：可以直接照着写代码。包括表结构和 DDL、接口清单与详情、并发与幂等方案、设计决策 D-xx、任务拆分 T-xx。
+- **颗粒度清单**：用一份 10 类检查清单（字段、边界、状态、权限、异常、联动……）逐条过需求，找出需求文档里没写清楚的地方。
+- **遵循现有代码约定**：先扫描项目，沿用现有的统一返回类、路径风格、表前缀、主键策略和审计字段。
+- **评审后更新**：告诉它“Q-03 选 B”，它会更新所有受影响的章节，并保留问题记录和修订历史。
+- **检查脚本**：`design_check.py` 检查每条需求是否都有验收标准和技术设计、是否还残留已确认问题的【假设】；加 `--scan` 参数可以对比代码，列出哪些接口、表、字段还没实现。
+
+示例：[`优惠券需求说明书`](examples/demo-shop/docs/requirements) → [`优惠券-详细设计.md`](examples/demo-shop/docs/design/优惠券-详细设计.md)
+
+## spring-delivery-docs：代码 → 交付文档
 
 外包和项目制 Java 团队每次验收前，都要花几天手写文档，写完就和代码对不上。这个 skill 让文档直接从代码里长出来：
 
@@ -40,10 +69,10 @@ Claude：扫描到 13 个接口、3 张表……已生成 docs/delivery/ 下 4 �
 ```bash
 git clone https://github.com/ColinTing/spring-delivery-docs.git
 
-# 所有项目可用
-cp -r spring-delivery-docs/skills/spring-delivery-docs ~/.claude/skills/
+# 所有项目可用（两个 skill 建议一起装，详细设计会调用交付文档的扫描器）
+cp -r spring-delivery-docs/skills/* ~/.claude/skills/
 # 或只给某个项目
-cp -r spring-delivery-docs/skills/spring-delivery-docs <your-project>/.claude/skills/
+cp -r spring-delivery-docs/skills/* <your-project>/.claude/skills/
 ```
 
 只依赖 Python 3 标准库，不需要装任何包。
@@ -57,6 +86,9 @@ cp -r spring-delivery-docs/skills/spring-delivery-docs <your-project>/.claude/sk
 - “写个部署手册，运维不懂 Java”
 - “v1.2.0 到现在改了什么，出个版本说明”
 - “交付文档都做一下”（生成全套四份）
+- “这是需求文档，出个详细设计”（附上 docx、pdf 或 md 文件）
+- “评审结果：Q-01 选 A，Q-03 选 B”（更新设计）
+- “对照详细设计看看开发进度”
 
 需要 Word 版时说“转成 docx”。如果装了 pandoc 会直接转换，并支持套用公司的 Word 模板。
 
@@ -77,9 +109,15 @@ python3 skills/spring-delivery-docs/scripts/check_docs.py scan.json docs/deliver
 skills/spring-delivery-docs/
 ├── SKILL.md                 # 工作流程与写作规则
 ├── scripts/
-│   ├── scan_spring.py       # 源码 → 事实 JSON
+│   ├── scan_spring.py       # 源码 → 事实 JSON（两个 skill 共用）
 │   └── check_docs.py        # 覆盖率 + 密钥泄露校验
 └── references/              # 四类文档模板
+skills/spring-detailed-design/
+├── SKILL.md
+├── scripts/design_check.py  # 需求追溯校验 + 设计与代码比对
+└── references/
+    ├── granularity-checklist.md   # 需求颗粒度检查清单
+    └── design-doc-template.md
 evals/evals.json             # 测试用例
 examples/demo-shop/          # 示例项目及生成结果
 ```

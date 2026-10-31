@@ -16,7 +16,8 @@
         "数据库文档指出 t_operation_log 没有对应实体",
         "部署手册中的数据库密码、Redis 密码、APIv3 密钥都是 ****** 或占位，未出现 10.0.3.x 地址",
         "认证方式等代码中不存在的信息写成【待确认】，而不是编造"
-      ]
+      ],
+      "skill": "spring-delivery-docs"
     },
     {
       "id": 2,
@@ -28,7 +29,8 @@
         "包含 POST /api/v1/orders 和 GET /api/v1/orders/mine",
         "说明了请求头 X-User-Id",
         "说明创建订单库存不足返回 2001"
-      ]
+      ],
+      "skill": "spring-delivery-docs"
     },
     {
       "id": 3,
@@ -40,6 +42,52 @@
         "给出可直接复制的构建和启动命令",
         "配置项表中的密码类值没有原样出现",
         "未把 mall-portal 或 mall-search 的配置混进来"
+      ],
+      "skill": "spring-delivery-docs"
+    },
+    {
+      "id": 4,
+      "skill": "spring-detailed-design",
+      "prompt": "这是运营给的优惠券需求文档 docs/requirements/优惠券需求说明书V1.0.docx，出个详细设计，周三要和他们评审",
+      "project": "examples/demo-shop",
+      "expected_output": "docs/design/ 下的详细设计；design_check.py PASS",
+      "expectations": [
+        "design_check.py 输出 PASS",
+        "需求清单至少 10 条，包含由“订单取消退回”推导出的退券需求",
+        "待澄清问题包含：适用范围、有效期形式、能否叠加、门槛是否含等于、停用后已领券能否使用",
+        "指出系统目前没有取消订单功能，R-10 依赖它",
+        "阻塞问题单独列出，每个问题都有选项和带理由的建议",
+        "技术设计沿用 Result<T>、/api/v1 前缀、t_ 表前缀、BaseEntity 字段、ASSIGN_ID 主键",
+        "领券防超发和防重复领取有具体方案（条件更新、唯一索引），而不是笼统地写“加锁”",
+        "第一部分业务确认中不出现 Java 类名",
+        "折扣计算的验收标准包含舍入和封顶的边界用例"
+      ]
+    },
+    {
+      "id": 5,
+      "skill": "spring-detailed-design",
+      "prompt": "评审开完了：Q-01 选 A，Q-04 选 B 满减和折扣各一张，Q-06 选 A 超时 30 分钟自动取消，新问题：券能不能在商品详情页直接显示“券后价”",
+      "project": "examples/demo-shop（含 eval 4 的设计文档）",
+      "expected_output": "更新后的设计文档 v0.2",
+      "expectations": [
+        "Q-01、Q-04、Q-06 状态改为已确认，并写明答复和日期，行没有被删除",
+        "Q-04 改为 B 后，表结构从单个 user_coupon_id 改为可记录两张券（关联表或两个字段），计算顺序和分摊规则作为新问题或新规则出现",
+        "新增问题使用新编号 Q-13，没有重排已有编号",
+        "修订记录新增 v0.2 一行",
+        "design_check.py PASS，不残留已确认问题的【假设】"
+      ]
+    },
+    {
+      "id": 6,
+      "skill": "spring-detailed-design",
+      "prompt": "对照优惠券详细设计看看现在开发到哪了",
+      "project": "examples/demo-shop（含设计文档，代码未实现）",
+      "expected_output": "进度报告",
+      "expectations": [
+        "运行了 scan_spring.py 和 design_check.py --scan",
+        "报告 7 个新增接口均未实现、3 张表（含 t_order 修改）未完成",
+        "POST /api/v1/orders 被识别为修改接口，而不是已完成",
+        "没有把 GET /api/v1/orders/mine 当成超出设计的范围"
       ]
     }
   ]
