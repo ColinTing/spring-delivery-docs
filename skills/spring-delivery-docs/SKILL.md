@@ -84,4 +84,21 @@ Tell the user, briefly:
 - the `【待确认】` items grouped by who can answer (dev, ops, product)
 - code problems you noticed along the way, such as entity/DDL drift, endpoints missing descriptions, or unvalidated request bodies. These are worth fixing before 验收.
 
-If they need Word/PDF for the client: `pandoc 01-接口文档.md -o 01-接口文档.docx` (add `--reference-doc=their-template.docx` to match the company style). Only run it if pandoc is installed. Otherwise give them the command.
+### 7. Word 版
+
+Clients and reviewers work in Word, so **produce .docx by default** once the check passes. Skip it only if the user says Markdown is enough. Markdown stays the source: edits and the check script work on it, and the .docx is regenerated from it.
+
+```bash
+python3 <skill_dir>/scripts/md2docx.py <docs_dir>            # every .md in the dir → .docx next to it
+python3 <skill_dir>/scripts/md2docx.py <docs_dir> --template 公司模板.docx   # company styles
+```
+
+It renders Mermaid diagrams to images, adds table borders and shaded, repeating header rows, keeps `<br>` line breaks, applies Chinese fonts, A4 page size, a table of contents and page numbers, and highlights 【待确认】 (red) and 【假设】 (orange). Read its output:
+
+- `pandoc is required` / `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
+- `diagrams 0/N` or `no Mermaid renderer`: the docx is still produced with the diagram source kept. Tell the user `npm i -g @mermaid-js/mermaid-cli` fixes it. The first run may also fetch it via npx, which downloads a headless Chrome.
+- If the user has a company Word template, ask for it and pass `--template`. Tables and page numbers are still applied on top.
+
+Tell the user that Word asks to update fields when the file opens. That fills in the table of contents. Answer yes.
+
+Never send document content to online diagram services. Design and delivery docs are confidential to the client.

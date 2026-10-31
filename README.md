@@ -75,7 +75,13 @@ cp -r spring-delivery-docs/skills/* ~/.claude/skills/
 cp -r spring-delivery-docs/skills/* <your-project>/.claude/skills/
 ```
 
-只依赖 Python 3 标准库，不需要装任何包。
+扫描和检查只依赖 Python 3 标准库。生成 Word 版需要额外安装：
+
+```bash
+brew install pandoc                       # Windows: winget install pandoc
+pip3 install python-docx
+npm i -g @mermaid-js/mermaid-cli          # 可选：把流程图、状态图渲染成图片；不装时首次运行会通过 npx 自动获取
+```
 
 ## 使用
 
@@ -90,7 +96,15 @@ cp -r spring-delivery-docs/skills/* <your-project>/.claude/skills/
 - “评审结果：Q-01 选 A，Q-03 选 B”（更新设计）
 - “对照详细设计看看开发进度”
 
-需要 Word 版时说“转成 docx”。如果装了 pandoc 会直接转换，并支持套用公司的 Word 模板。
+默认同时输出 Markdown 和 Word 两份：Markdown 是源文件，供 Claude 修改和校验；Word 版用于评审和交付。Word 版包括：
+
+- 流程图、状态图、时序图渲染成图片
+- 表格加边框，表头加底色并跨页重复，列宽按内容自动分配
+- 宋体正文、黑体标题，A4 纸，自动生成目录，页脚显示“第 X 页 / 共 Y 页”
+- 【待确认】标红、【假设】标橙，评审时一眼能看到还要业务方拍板的地方
+- 说“用这个模板 公司模板.docx”，就会套用公司的 Word 样式
+
+单独转换：`python3 skills/spring-delivery-docs/scripts/md2docx.py docs/design --template 公司模板.docx`
 
 脚本也可以单独用：
 
@@ -110,7 +124,8 @@ skills/spring-delivery-docs/
 ├── SKILL.md                 # 工作流程与写作规则
 ├── scripts/
 │   ├── scan_spring.py       # 源码 → 事实 JSON（两个 skill 共用）
-│   └── check_docs.py        # 覆盖率 + 密钥泄露校验
+│   ├── check_docs.py        # 覆盖率 + 密钥泄露校验
+│   └── md2docx.py           # Markdown → Word（两个 skill 共用）
 └── references/              # 四类文档模板
 skills/spring-detailed-design/
 ├── SKILL.md

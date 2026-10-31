@@ -72,7 +72,17 @@ Tell the user:
 - The assumptions with the biggest impact if wrong.
 - Suggested next step: review Part 1 with the business side, then come back with the answers.
 
-Word export for the meeting: `pandoc xxx.md -o xxx.docx`. Mermaid diagrams do not render in Word, so tell the user to render them first (e.g. `mmdc`), or to share the Markdown in a viewer that renders Mermaid.
+### 7. Word 版
+
+Review meetings run on Word documents, so **produce a .docx by default** after the check passes. Use the converter from the sibling skill:
+
+```bash
+python3 <skills_dir>/spring-delivery-docs/scripts/md2docx.py docs/design/xxx-详细设计.md [--template 公司模板.docx]
+```
+
+It renders the Mermaid flow/state/sequence diagrams to images, formats tables (borders, repeating header row, `<br>` option lists as real line breaks), and highlights 【假设】 in orange and 【待确认】 in red, so the business side sees at a glance what still needs their decision. Handle its messages as described in spring-delivery-docs step 7: install hints for missing pandoc/python-docx, and diagrams kept as source when no Mermaid renderer exists.
+
+The Markdown is the master copy. If the business side sends back an edited or commented .docx, read it (`pandoc -t gfm their.docx`, or open the file for comments), fold the changes into the Markdown as review answers (see below), and regenerate the .docx. Never edit the .docx directly.
 
 ## Updating after review
 
@@ -82,7 +92,7 @@ When the user brings answers ("Q-03 选 B，Q-05 上限改成 3 张"):
 2. Remove the matching `【假设，见 Q-xx】` markers and rewrite the affected rules, tables, APIs and ACs. Search the whole doc for the Q id, since one answer usually touches several sections.
 3. New questions raised in the meeting get new ids. Never renumber existing ones.
 4. Add a row to 修订记录 and bump the version.
-5. Rerun the checker.
+5. Rerun the checker, then regenerate the .docx. Name it with the version (e.g. `优惠券-详细设计-v0.2.docx`, using `--out-dir` or by renaming) so the copy sent after the meeting is distinguishable from the one reviewed.
 
 ## Checking implementation progress
 
