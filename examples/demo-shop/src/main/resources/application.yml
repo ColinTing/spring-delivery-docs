@@ -1,0 +1,22 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /shop
+spring:
+  profiles:
+    active: dev
+  application:
+    name: demo-shop
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+logging:
+  file:
+    path: /var/log/demo-shop
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

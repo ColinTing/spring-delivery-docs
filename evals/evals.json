@@ -1,0 +1,46 @@
+{
+  "skill_name": "spring-delivery-docs",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "下周要验收了，甲方要交付文档，帮我把这个项目的文档都整出来",
+      "project": "examples/demo-shop",
+      "expected_output": "docs/delivery/ 下 4 份文档；check_docs.py PASS",
+      "expectations": [
+        "生成了接口文档、数据库设计文档、部署运维手册、版本变更说明四个文件",
+        "check_docs.py 输出 PASS（13 个接口全覆盖、3 张表全覆盖、无密钥/IP 泄露）",
+        "接口文档中 POST /api/v1/orders 的请求体展开了 items 内的 skuId 和 quantity，quantity 写明取值 1–99",
+        "GET /api/v1/users/page 的响应把 Result<PageResult<UserVO>> 展开到 records 内的 UserVO 字段",
+        "删除用户接口被标记为已废弃，且四个路径/方法组合都列出",
+        "订单状态枚举 10/20/30/-1 有对应含义表",
+        "数据库文档指出 t_operation_log 没有对应实体",
+        "部署手册中的数据库密码、Redis 密码、APIv3 密钥都是 ****** 或占位，未出现 10.0.3.x 地址",
+        "认证方式等代码中不存在的信息写成【待确认】，而不是编造"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "前端要对接订单模块，帮我出一份订单相关的接口文档就行",
+      "project": "examples/demo-shop",
+      "expected_output": "仅订单模块的接口文档",
+      "expectations": [
+        "只生成接口文档，没有生成数据库或部署文档",
+        "包含 POST /api/v1/orders 和 GET /api/v1/orders/mine",
+        "说明了请求头 X-User-Id",
+        "说明创建订单库存不足返回 2001"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "运维要上线 mall-admin，写个部署手册，他们不懂 Java",
+      "project": "https://github.com/macrozheng/mall (clone --depth 1)",
+      "expected_output": "mall-admin 的部署运维手册",
+      "expectations": [
+        "环境要求列出 MySQL、Redis 等 mall-admin 实际依赖的中间件，并注明依据",
+        "给出可直接复制的构建和启动命令",
+        "配置项表中的密码类值没有原样出现",
+        "未把 mall-portal 或 mall-search 的配置混进来"
+      ]
+    }
+  ]
+}
