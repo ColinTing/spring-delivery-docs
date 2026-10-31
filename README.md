@@ -38,7 +38,7 @@ Claude：扫描到 13 个接口、3 张表……已生成 docs/delivery/ 下 4 �
 ## 安装
 
 ```bash
-git clone https://github.com/<you>/spring-delivery-docs.git
+git clone https://github.com/ColinTing/spring-delivery-docs.git
 
 # 所有项目可用
 cp -r spring-delivery-docs/skills/spring-delivery-docs ~/.claude/skills/
