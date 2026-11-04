@@ -7,7 +7,7 @@
 | [`spring-detailed-design`](#spring-detailed-design需求--详细设计) | 开发前 | 需求文档 → 详细设计（业务确认 + 技术设计），以及评审用的待澄清问题清单 |
 | [`spring-delivery-docs`](#spring-delivery-docs代码--交付文档) | 验收时 | 源码 → 接口文档、数据库设计文档、部署运维手册、版本变更说明 |
 
-两个 skill 共用同一个代码扫描器，所以设计文档可以直接和代码比对开发进度。
+两个 skill 相互独立，可以只装其中一个。代码扫描器和 Word 转换脚本在两个 skill 里各有一份相同的副本，所以单独装详细设计也能扫描现有代码、导出 Word、对比开发进度。
 
 ## spring-detailed-design：需求 → 详细设计
 
@@ -71,9 +71,10 @@ Claude：扫描到 13 个接口、3 张表……已生成 docs/delivery/ 下 4 �
 ```bash
 git clone https://github.com/ColinTing/spring-delivery-docs.git
 
-# 所有项目可用（两个 skill 建议一起装，详细设计会调用交付文档的扫描器）
+# 装到用户目录，所有项目可用。两个都装：
 mkdir -p ~/.claude/skills && cp -r spring-delivery-docs/skills/* ~/.claude/skills/
-# 或只给某个项目：cp -r spring-delivery-docs/skills/* <your-project>/.claude/skills/
+# 只装详细设计：cp -r spring-delivery-docs/skills/spring-detailed-design ~/.claude/skills/
+# 只给某个项目装：把目标目录换成 <your-project>/.claude/skills/
 
 # Word 导出依赖（扫描和检查只用 Python 标准库，不需要这些）
 brew install pandoc && pip3 install python-docx     # 或者：python3 -m pip install python-docx pypandoc_binary
@@ -90,7 +91,10 @@ git clone https://github.com/ColinTing/spring-delivery-docs.git
 
 # 复制 skill 到用户目录，所有项目可用
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills" | Out-Null
-Copy-Item -Recurse -Force D:\IdeaProjects\spring-delivery-docs\skills\* "$env:USERPROFILE\.claude\skills\"
+# 只装详细设计：
+Copy-Item -Recurse -Force D:\IdeaProjects\spring-delivery-docs\skills\spring-detailed-design "$env:USERPROFILE\.claude\skills\"
+# 或者两个都装：
+# Copy-Item -Recurse -Force D:\IdeaProjects\spring-delivery-docs\skills\* "$env:USERPROFILE\.claude\skills\"
 
 # Word 导出依赖：pypandoc_binary 自带 pandoc
 python -m pip install --user python-docx pypandoc_binary
@@ -114,7 +118,7 @@ $env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx -y @mermaid-js/mermaid-cli@11.4.2 --vers
 - “写个部署手册，运维不懂 Java”
 - “v1.2.0 到现在改了什么，出个版本说明”
 - “交付文档都做一下”（生成全套四份）
-- “这是需求文档，出个详细设计”（附上 docx、pdf 或 md 文件）
+- “需求文档是 C:\Users\me\Downloads\迭代9\需求说明书.docx，出个详细设计，放到同一个目录”（写上文件路径；docx、pdf、md 都可以；不指定位置时默认写到项目的 `docs/design/`）
 - “评审结果：Q-01 选 A，Q-03 选 B”（更新设计）
 - “对照详细设计看看开发进度”
 
@@ -126,13 +130,16 @@ $env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx -y @mermaid-js/mermaid-cli@11.4.2 --vers
 - 【待确认】标红、【假设】标橙，评审时一眼能看到还要业务方拍板的地方
 - 说“用这个模板 公司模板.docx”，就会套用公司的 Word 样式
 
-单独转换：`python3 skills/spring-delivery-docs/scripts/md2docx.py docs/design --template 公司模板.docx`
-
-脚本也可以单独用：
+脚本也可以单独用（以 spring-detailed-design 里的为例，两个 skill 里的同名脚本完全相同）：
 
 ```bash
-python3 skills/spring-delivery-docs/scripts/scan_spring.py <项目目录> --out scan.json
-python3 skills/spring-delivery-docs/scripts/check_docs.py scan.json docs/delivery
+S=skills/spring-detailed-design/scripts
+python3 $S/docx2md.py 需求说明书.docx                    # Word → Markdown，打印大纲和图片清单
+python3 $S/docx2md.py 评审回来的.docx --track-changes all  # 保留对方的修订和批注
+python3 $S/scan_spring.py <项目目录>                     # 扫描代码，打印摘要和 JSON 路径
+python3 $S/design_check.py 详细设计.md --scan <JSON 路径>  # 需求追溯校验 + 开发进度
+python3 $S/md2docx.py 详细设计.md --template 公司模板.docx  # Markdown → Word
+python3 skills/spring-delivery-docs/scripts/check_docs.py <JSON 路径> docs/delivery  # 交付文档覆盖率 + 泄密检查
 ```
 
 ## 示例
@@ -145,18 +152,32 @@ python3 skills/spring-delivery-docs/scripts/check_docs.py scan.json docs/deliver
 skills/spring-delivery-docs/
 ├── SKILL.md                 # 工作流程与写作规则
 ├── scripts/
-│   ├── scan_spring.py       # 源码 → 事实 JSON（两个 skill 共用）
+│   ├── scan_spring.py       # 源码 → 事实 JSON（共用脚本的源文件）
 │   ├── check_docs.py        # 覆盖率 + 密钥泄露校验
-│   └── md2docx.py           # Markdown → Word（两个 skill 共用）
+│   └── md2docx.py           # Markdown → Word（共用脚本的源文件）
 └── references/              # 四类文档模板
 skills/spring-detailed-design/
 ├── SKILL.md
-├── scripts/design_check.py  # 需求追溯校验 + 设计与代码比对
+├── scripts/
+│   ├── docx2md.py           # 需求文档 Word → Markdown（含修订和批注）
+│   ├── design_check.py      # 需求追溯校验 + 设计与代码比对
+│   ├── scan_spring.py       # 副本，由 tools/sync_shared.py 同步
+│   └── md2docx.py           # 副本，由 tools/sync_shared.py 同步
 └── references/
     ├── granularity-checklist.md   # 需求颗粒度检查清单
     └── design-doc-template.md
+tools/sync_shared.py         # 同步两个 skill 的共用脚本
 evals/evals.json             # 测试用例
 examples/demo-shop/          # 示例项目及生成结果
+```
+
+## 开发说明
+
+每个 skill 目录都要能单独安装，所以共用脚本（`scan_spring.py`、`md2docx.py`）在两个 skill 里各有一份真实的文件，没有用软链接，因为 Windows 默认检出时软链接会变成普通文本文件。修改时只改 `skills/spring-delivery-docs/scripts/` 里的版本，然后运行：
+
+```bash
+python tools/sync_shared.py          # 更新副本
+python tools/sync_shared.py --check  # 只检查；两份不一致时返回非零，CI 里也会跑
 ```
 
 ## Roadmap

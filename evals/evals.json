@@ -89,6 +89,20 @@
         "POST /api/v1/orders 被识别为修改接口，而不是已完成",
         "没有把 GET /api/v1/orders/mine 当成超出设计的范围"
       ]
+    },
+    {
+      "id": 7,
+      "skill": "spring-detailed-design",
+      "prompt": "/spring-detailed-design 需求文档是 ~/Downloads/迭代9/优惠券需求说明书V1.0.docx，出个详细设计，也放到这个目录下。当前目录是源代码目录",
+      "project": "examples/demo-shop，只安装 spring-detailed-design（没有 spring-delivery-docs），需求文档放在项目外的 Downloads/迭代9/",
+      "expected_output": "Downloads/迭代9/ 下的 详细设计 .md 和 .docx",
+      "expectations": [
+        "用 skill 自带的 docx2md.py 读取需求文档，没有调用 spring-delivery-docs 目录下的脚本",
+        "用 skill 自带的 scan_spring.py 扫描当前目录，没有把扫描 JSON 整份打印或读取",
+        "详细设计的 .md 和 .docx 都写在 Downloads/迭代9/，源代码目录里没有新增文件",
+        "design_check.py 输出 PASS",
+        "技术设计沿用扫描摘要里的约定（Result<T>、/api/v1、t_ 表前缀）"
+      ]
     }
   ]
 }

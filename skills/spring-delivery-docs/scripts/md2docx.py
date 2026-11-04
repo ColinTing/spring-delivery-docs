@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Convert delivery / design Markdown into Word (.docx) ready for review meetings.
 
+Shared by the spring-delivery-docs and spring-detailed-design skills, so each skill
+folder works on its own. Edit the copy in skills/spring-delivery-docs/scripts/, then
+run `python tools/sync_shared.py` to update the other skill's copy.
+
 What it adds over a bare `pandoc x.md -o x.docx`:
   - Mermaid diagrams rendered to images (Word cannot render Mermaid)
   - bordered tables, shaded header row repeated across pages, 9pt table text
@@ -550,6 +554,7 @@ def main():
         if not ref:
             ref = os.path.join(tmp, "reference.docx")
             build_reference(ref, args.pandoc)
+        failed = 0
         for f in files:
             out_dir = args.out_dir or os.path.dirname(os.path.abspath(f))
             os.makedirs(out_dir, exist_ok=True)
@@ -558,9 +563,11 @@ def main():
                 n, ok = convert(f, out, ref, args, bool(args.template))
             except Exception as e:  # keep going with the other files
                 print(f"FAIL {f}: {e}")
+                failed += 1
                 continue
             diag = f", diagrams {ok}/{n}" if n else ""
             print(f"wrote {out}{diag}")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

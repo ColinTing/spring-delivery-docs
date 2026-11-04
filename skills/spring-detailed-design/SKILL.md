@@ -27,13 +27,17 @@ The design document serves two readers:
 
 ### 1. Read the inputs
 
-- **Requirement doc**: `.docx` → `pandoc -t gfm input.docx -o <tmp>/req.md` (add `--extract-media=<tmp>/req-media` and look at the images; prototypes and flowcharts carry half the requirements). `.pdf` → read it directly. For images and screenshots of prototypes, read the image. If `pandoc` is not on PATH but `pypandoc_binary` is installed (the usual setup on Windows), use its bundled binary: `"$(python -c 'import pypandoc; print(pypandoc.get_pandoc_path())')" -t gfm input.docx -o <tmp>/req.md`. If neither exists, ask the user to install it (`python -m pip install pypandoc_binary`) or to save the document as PDF.
-- **Prior design versions or meeting notes**, if the user has them. If this is an update after a review meeting, go to "Updating after review" below.
-- **Existing code** (if run inside a Spring project): scan it with the sibling skill's scanner if available:
+- **Requirement doc**: for `.docx` (also `.odt`, `.rtf`, `.html`) run
   ```bash
-  python3 <skills_dir>/spring-delivery-docs/scripts/scan_spring.py <project_root>
+  python3 <skill_dir>/scripts/docx2md.py <requirement.docx>
   ```
-  It prints a compact summary and the path of the full JSON. Never print or Read the whole JSON. From the summary's conventions section, plus targeted one-liner queries for the existing tables and APIs the feature touches, learn the conventions you must follow: response wrapper (`Result<T>`), path style (`/api/v1/...`), table prefix, primary key strategy, BaseEntity audit fields, logic delete, existing enums, and which existing tables/APIs the new feature touches. If the scanner is not installed, read a couple of existing controllers, entities and the SQL directly.
+  It writes Markdown to the system temp dir and prints its path, an outline (headings with line numbers), and the extracted images. Read the .md, in parts if it is long, jumping by the outline's line numbers. Then view the images: prototypes and flowcharts carry half the requirements. EMF/WMF drawings cannot be viewed, so ask for screenshots if they matter. `.pdf` → Read it directly. `.doc`/`.wps` → ask the user to save it as .docx. Screenshots and pasted text → use them as they are. If the script reports pandoc missing, give the user the install command it printed.
+- **Prior design versions or meeting notes**, if the user has them. If this is an update after a review meeting, go to "Updating after review" below.
+- **Existing code** (when run inside a Spring project):
+  ```bash
+  python3 <skill_dir>/scripts/scan_spring.py <project_root>
+  ```
+  It prints a compact summary and the path of the full JSON. Never print or Read the whole JSON. From the summary's conventions section, plus targeted one-liner queries for the existing tables and APIs the feature touches, learn the conventions you must follow: response wrapper (`Result<T>`), path style (`/api/v1/...`), table prefix, primary key strategy, BaseEntity audit fields, logic delete, existing enums, and which existing tables/APIs the new feature touches. If it finds no endpoints (not a Spring MVC project, or an unusual layout), read a couple of existing controllers, entities and the SQL directly.
 
 ### 2. Decompose into requirement items
 
@@ -52,11 +56,11 @@ Keep questions answerable in a meeting: concrete, one decision per question, opt
 
 ### 4. Write the design document
 
-Follow `references/design-doc-template.md`. Default output: `docs/design/{功能名}-详细设计.md` in the project, in the user's language (default 中文). Points that matter:
+Follow `references/design-doc-template.md`. Default output: `docs/design/{功能名}-详细设计.md` in the project, in the user's language (default 中文). If the user names another place (often the folder holding the requirement doc), write there instead, with the .md and the .docx side by side, and write nothing into the source tree. Points that matter:
 
 - Part 1 contains no code identifiers except where business people already use them (e.g. status names they know).
 - Use Mermaid for flows (`flowchart`), state machines (`stateDiagram-v2`) and key interactions (`sequenceDiagram`). Business people do read diagrams.
-- **API addresses are written `` `METHOD /path` ``**, and table design headings are `` #### `table_name` 说明 ``. The checker and the delivery-doc skill both rely on this form.
+- **API addresses are written `` `METHOD /path` ``**, and table design headings are `` #### `table_name` 说明 ``. The checker relies on this form.
 - Extending an existing table: list only the new or changed columns, and say "修改" in the heading.
 - DDL in the doc must be executable for the project's database (check the driver in the scan).
 - Task breakdown: each task references its R items. Use relative size (S/M/L) unless the user asks for person-days.
@@ -78,15 +82,21 @@ Tell the user:
 
 ### 7. Word 版
 
-Review meetings run on Word documents, so **produce a .docx by default** after the check passes. Use the converter from the sibling skill:
+Review meetings run on Word documents, so **produce a .docx by default** after the check passes:
 
 ```bash
-python3 <skills_dir>/spring-delivery-docs/scripts/md2docx.py docs/design/xxx-详细设计.md [--template 公司模板.docx]
+python3 <skill_dir>/scripts/md2docx.py <path to 详细设计.md> [--template 公司模板.docx]
 ```
 
-It renders the Mermaid flow/state/sequence diagrams to images, formats tables (borders, repeating header row, `<br>` option lists as real line breaks), and highlights 【假设】 in orange and 【待确认】 in red, so the business side sees at a glance what still needs their decision. Handle its messages as described in spring-delivery-docs step 7: install hints for missing pandoc/python-docx, and diagrams kept as source when no Mermaid renderer exists.
+It writes the .docx next to the .md. It renders the Mermaid flow/state/sequence diagrams to images, formats tables (borders, repeating header row, `<br>` option lists as real line breaks), and applies Chinese fonts, A4, a table of contents and page numbers. It highlights 【假设】 in orange and 【待确认】 in red, so the business side sees at a glance what still needs their decision. Read its output:
 
-The Markdown is the master copy. If the business side sends back an edited or commented .docx, read it (`pandoc -t gfm their.docx`, or open the file for comments), fold the changes into the Markdown as review answers (see below), and regenerate the .docx. Never edit the .docx directly.
+- `pandoc not found` / `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
+- `diagrams 0/N` or `no Mermaid renderer`: the docx is still produced with the diagram source kept. Rendering needs Node.js. No global install is needed: the script falls back to `npx`, which installs into the user's npm cache (no admin rights). On the first run that downloads ~300 MB and can take minutes. Warming the cache once avoids that: `npx -y @mermaid-js/mermaid-cli@11.4.2 --version` with `PUPPETEER_SKIP_DOWNLOAD=1` set (PowerShell: `$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx ...`). The script drives the installed Chrome/Edge, so no browser download is needed. Never suggest running npm as administrator.
+- If the user has a company Word template, ask for it and pass `--template`. Tables and page numbers are still applied on top.
+
+Tell the user that Word asks to update fields when the file opens. That fills in the table of contents. Answer yes. Never send document content to online diagram services, because design docs are confidential to the client.
+
+The Markdown is the master copy. If the business side sends back an edited or commented .docx, convert it with `python3 <skill_dir>/scripts/docx2md.py their.docx --track-changes all`. Their insertions, deletions and comments stay visible as `[text]{.insertion author=...}`, `{.deletion ...}` and `{.comment-start ...}` spans. Fold them into the Markdown as review answers (see below) and regenerate the .docx. Never edit the .docx directly.
 
 ## Updating after review
 
@@ -103,7 +113,7 @@ When the user brings answers ("Q-03 选 B，Q-05 上限改成 3 张"):
 During or after development, compare the design with the code:
 
 ```bash
-python3 <skills_dir>/spring-delivery-docs/scripts/scan_spring.py <project_root>
+python3 <skill_dir>/scripts/scan_spring.py <project_root>
 python3 <skill_dir>/scripts/design_check.py docs/design/xxx-详细设计.md --scan <scan JSON path it printed>
 ```
 

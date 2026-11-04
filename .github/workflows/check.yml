@@ -1,0 +1,40 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Shared scripts are in sync
+        run: python tools/sync_shared.py --check
+
+      - name: Scripts compile
+        run: python -m py_compile skills/*/scripts/*.py tools/*.py
+
+      - name: Install Word export dependencies
+        run: python -m pip install python-docx pypandoc_binary
+
+      - name: spring-delivery-docs on the example project
+        run: |
+          S=skills/spring-delivery-docs/scripts
+          python $S/scan_spring.py examples/demo-shop --out /tmp/scan.json
+          python $S/check_docs.py /tmp/scan.json examples/demo-shop/docs/delivery
+          python $S/md2docx.py examples/demo-shop/docs/delivery --out-dir /tmp/delivery-docx --no-npx
+
+      - name: spring-detailed-design on the example project
+        run: |
+          S=skills/spring-detailed-design/scripts
+          D=examples/demo-shop/docs/design/优惠券-详细设计.md
+          python $S/docx2md.py examples/demo-shop/docs/requirements/优惠券需求说明书V1.0.docx --out-dir /tmp/req
+          python $S/scan_spring.py examples/demo-shop --out /tmp/scan2.json
+          python $S/design_check.py "$D"
+          python $S/design_check.py "$D" --scan /tmp/scan2.json
+          python $S/md2docx.py "$D" --out-dir /tmp/design-docx --no-npx

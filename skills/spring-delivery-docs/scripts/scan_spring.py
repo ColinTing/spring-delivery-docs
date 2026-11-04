@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Scan a Spring Boot project and emit a JSON fact sheet for delivery docs.
+"""Scan a Spring Boot project and emit a JSON fact sheet for delivery and design docs.
+
+Shared by the spring-delivery-docs and spring-detailed-design skills, so each skill
+folder works on its own. Edit the copy in skills/spring-delivery-docs/scripts/, then
+run `python tools/sync_shared.py` to update the other skill's copy.
 
 Pure stdlib. Parses Java sources with a light structural parser (not a full
 compiler), so treat the output as facts plus warnings, never as gospel.
