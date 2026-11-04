@@ -6,13 +6,19 @@ compiler), so treat the output as facts plus warnings, never as gospel.
 
 Usage:
     python3 scan_spring.py <project_root> [--out scan.json]
+
+The JSON can be megabytes on a large project, so it is never printed: it goes to --out,
+or to the system temp dir by default (`--out -` prints it, for small projects only).
+A compact summary (scale, modules, conventions, warnings) is printed instead.
 """
 import argparse
 import json
 import os
 import re
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 SKIP_DIRS = {".git", "target", "build", "node_modules", ".idea", ".gradle", "out", "dist"}
 
@@ -907,11 +913,103 @@ def utf8_output():
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+def path_prefix(path):
+    """/api/v1/users/{id} -> /api/v1 ; /brand/list -> /brand"""
+    segs = [x for x in path.split("/") if x]
+    if not segs:
+        return "/"
+    pre = "/" + segs[0]
+    if len(segs) > 1 and re.fullmatch(r"v\d+", segs[1]):
+        pre += "/" + segs[1]
+    return pre
+
+
+def resource(path):
+    """/api/v1/users/{id} -> /api/v1/users ; /product/update/{id} -> /product"""
+    segs = [x for x in path.split("/") if x]
+    pre = [x for x in path_prefix(path).split("/") if x]
+    if len(pre) > 1 or (pre and pre[0].lower() == "api"):  # versioned or /api: resource is the next segment
+        nxt = segs[len(pre):len(pre) + 1]
+        return "/" + "/".join(pre + nxt)
+    return "/" + "/".join(pre)
+
+
+def top(counter, n=6):
+    items = counter.most_common()
+    text = ", ".join(f"{k} ({v})" for k, v in items[:n])
+    return text + (f", … {len(items) - n} more" if len(items) > n else "") if items else "-"
+
+
+def print_summary(out, by_name, json_path):
+    """What both skills need first, in a few dozen lines instead of the whole JSON."""
+    st, b = out["stats"], out["build"]
+    print(f"wrote {json_path}  ({st['endpoints']} endpoints, {st['models']} models, "
+          f"{st['entity_tables']} entity tables, {st['ddl_tables']} DDL tables, "
+          f"{len(out['warnings'])} warnings, {len(out['parse_errors'])} parse errors)")
+    root_pom = sorted(b["maven"], key=lambda x: x["file"].replace("\\", "/").count("/"))[:1]
+    for pi in root_pom:
+        props = pi.get("properties", {})
+        print(f"build: {pi.get('groupId')}:{pi.get('artifactId')}:{pi.get('version')} | parent "
+              f"{pi.get('parent', '-')} | java {props.get('java.version') or props.get('maven.compiler.source') or '?'}"
+              + (f" | {len(b['maven'])} pom.xml" if len(b["maven"]) > 1 else ""))
+    if b["gradle_files"]:
+        print(f"gradle: {', '.join(b['gradle_files'][:3])}")
+    print(f"middleware: {', '.join(b['middleware_detected']) or '-'}")
+
+    eps = out["endpoints"]
+    by_mod = {}
+    for e in eps:
+        by_mod.setdefault(e["module"] or ".", []).append(e)
+    print(f"modules with endpoints ({len(by_mod)}):")
+    for mod, items in sorted(by_mod.items(), key=lambda kv: -len(kv[1]))[:12]:
+        print(f"  {mod}: {len(items)} endpoints — {top(Counter(resource(e['path']) for e in items))}")
+    if len(by_mod) > 12:
+        print(f"  … {len(by_mod) - 12} more modules")
+
+    print("conventions:")
+    print(f"  path prefixes: {top(Counter(path_prefix(e['path']) for e in eps))}")
+    print(f"  response types: {top(Counter((re.match(r'[\w.]+', e['return_type'] or 'void') or [None])[0] for e in eps))}")
+    names = [t["table"] for t in out["entity_tables"]] + [t["table"] for t in out["ddl_tables"]]
+    print(f"  table prefixes: {top(Counter((re.match(r'^([A-Za-z]+_)', n) or [None, '(none)'])[1].lower() for n in set(names)))}")
+    bases, ids, special = Counter(), Counter(), Counter()
+    for t in out["entity_tables"]:
+        ext = (by_name.get(t["entity"]) or {}).get("extends")
+        bases[re.sub(r"<.*", "", ext) if ext else "(none)"] += 1
+        for c in t["columns"]:
+            if c.get("id_type") or c.get("generated"):
+                ids[c.get("id_type") or c.get("generated")] += 1
+            for k, label in (("logic_delete", "logic delete"), ("auto_fill", "auto fill"),
+                             ("optimistic_lock", "optimistic lock")):
+                if c.get(k):
+                    special[f"{label}: {c['column']}"] += 1
+    if out["entity_tables"]:
+        print(f"  entity base classes: {top(bases)}")
+        print(f"  id strategies: {top(ids)}")
+        print(f"  special columns: {top(special, 8)}")
+    enums = list(out["enums"])
+    print(f"  enums ({len(enums)}): {', '.join(enums[:10])}{' …' if len(enums) > 10 else ''}")
+    feign = out["feign_clients"]
+    if feign:
+        print(f"  feign clients: {', '.join(f['name'] + ' -> ' + str(f['service']) for f in feign[:6])}")
+
+    w = out["warnings"]
+    print(f"warnings ({len(w)}):" + ("" if w else " -"))
+    for x in w[:15]:
+        print(f"  {x}")
+    if len(w) > 15:
+        print(f"  … {len(w) - 15} more in the JSON")
+    for x in out["parse_errors"][:5]:
+        print(f"  parse error: {x}")
+    print(f"details: query the JSON for what you need, e.g. python -c \"import json; "
+          f"d=json.load(open('{json_path}', encoding='utf-8')); "
+          f"print([e['method']+' '+e['path'] for e in d['endpoints'] if e['path'].startswith('/api')][:50])\"")
+
+
 def main():
     utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root")
-    ap.add_argument("--out", help="write JSON here instead of stdout")
+    ap.add_argument("--out", help="JSON output path (default: system temp dir; '-' prints the JSON)")
     args = ap.parse_args()
     root = os.path.abspath(args.root)
     rel = lambda p: os.path.relpath(p, root)
@@ -1012,15 +1110,18 @@ def main():
         "parse_errors": parse_errors,
     }
     text = json.dumps(out, ensure_ascii=False, indent=2)
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        s = out["stats"]
-        print(f"wrote {args.out}: {s['endpoints']} endpoints, {s['models']} models, "
-              f"{s['entity_tables']} entity tables, {s['ddl_tables']} DDL tables, "
-              f"{len(warnings)} warnings, {len(parse_errors)} parse errors")
-    else:
+    if args.out == "-":
         sys.stdout.write(text + "\n")
+        return
+    path = args.out or os.path.join(tempfile.gettempdir(),
+                                    "spring-scan-" + re.sub(r"[^\w.-]", "_", os.path.basename(root)) + ".json")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    # forward slashes work in Git Bash, PowerShell and Python strings alike
+    try:
+        print_summary(out, by_name, os.path.abspath(path).replace(os.sep, "/"))
+    except BrokenPipeError:  # summary piped into `head`; the JSON is already written
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
 if __name__ == "__main__":

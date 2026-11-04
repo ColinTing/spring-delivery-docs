@@ -21,17 +21,19 @@ The design document serves two readers:
 
 ## Workflow
 
-**Running the scripts**: they are Python 3. On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`) there.
+**Running the scripts**: they are Python 3. On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`) there. Put intermediate files in the system temp dir by absolute path. On Windows `/tmp` means different places to Git Bash and to native programs like pandoc and python.
+
+**Keep outputs bounded**: on a large project, a single huge tool output (a whole JSON file, an unbounded `grep -r`, a full `git log`) can exhaust Claude Code's memory and crash the session. Filter, use `| head`, and query only what you need.
 
 ### 1. Read the inputs
 
-- **Requirement doc**: `.docx` → `pandoc -t gfm input.docx -o /tmp/req.md` (add `--extract-media=/tmp/req-media` and look at the images; prototypes and flowcharts carry half the requirements). `.pdf` → read it directly. For images and screenshots of prototypes, read the image. If `pandoc` is not on PATH but `pypandoc_binary` is installed (the usual setup on Windows), use its bundled binary: `"$(python -c 'import pypandoc; print(pypandoc.get_pandoc_path())')" -t gfm input.docx -o /tmp/req.md`. If neither exists, ask the user to install it (`python -m pip install pypandoc_binary`) or to save the document as PDF.
+- **Requirement doc**: `.docx` → `pandoc -t gfm input.docx -o <tmp>/req.md` (add `--extract-media=<tmp>/req-media` and look at the images; prototypes and flowcharts carry half the requirements). `.pdf` → read it directly. For images and screenshots of prototypes, read the image. If `pandoc` is not on PATH but `pypandoc_binary` is installed (the usual setup on Windows), use its bundled binary: `"$(python -c 'import pypandoc; print(pypandoc.get_pandoc_path())')" -t gfm input.docx -o <tmp>/req.md`. If neither exists, ask the user to install it (`python -m pip install pypandoc_binary`) or to save the document as PDF.
 - **Prior design versions or meeting notes**, if the user has them. If this is an update after a review meeting, go to "Updating after review" below.
 - **Existing code** (if run inside a Spring project): scan it with the sibling skill's scanner if available:
   ```bash
-  python3 <skills_dir>/spring-delivery-docs/scripts/scan_spring.py <project_root> --out /tmp/spring-scan.json
+  python3 <skills_dir>/spring-delivery-docs/scripts/scan_spring.py <project_root>
   ```
-  From the scan, learn the conventions you must follow: response wrapper (`Result<T>`), path style (`/api/v1/...`), table prefix, primary key strategy, BaseEntity audit fields, logic delete, existing enums, and which existing tables/APIs the new feature touches. If the scanner is not installed, read a couple of existing controllers, entities and the SQL directly.
+  It prints a compact summary and the path of the full JSON. Never print or Read the whole JSON. From the summary's conventions section, plus targeted one-liner queries for the existing tables and APIs the feature touches, learn the conventions you must follow: response wrapper (`Result<T>`), path style (`/api/v1/...`), table prefix, primary key strategy, BaseEntity audit fields, logic delete, existing enums, and which existing tables/APIs the new feature touches. If the scanner is not installed, read a couple of existing controllers, entities and the SQL directly.
 
 ### 2. Decompose into requirement items
 
@@ -101,8 +103,8 @@ When the user brings answers ("Q-03 选 B，Q-05 上限改成 3 张"):
 During or after development, compare the design with the code:
 
 ```bash
-python3 <skills_dir>/spring-delivery-docs/scripts/scan_spring.py <project_root> --out /tmp/spring-scan.json
-python3 <skill_dir>/scripts/design_check.py docs/design/xxx-详细设计.md --scan /tmp/spring-scan.json
+python3 <skills_dir>/spring-delivery-docs/scripts/scan_spring.py <project_root>
+python3 <skill_dir>/scripts/design_check.py docs/design/xxx-详细设计.md --scan <scan JSON path it printed>
 ```
 
 It lists designed APIs, tables and columns that are not in the code yet, plus code endpoints under the same path prefixes that the design does not mention (scope creep, or the design needs an update). Report this as a progress table, and treat differences as questions to resolve, not automatically as code bugs: sometimes the code is right and the design should be updated.

@@ -13,6 +13,8 @@ The core rule: **every statement in a delivery doc must trace to code, SQL, conf
 
 **Running the scripts**: they are Python 3. On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`) there.
 
+**Keep outputs bounded**: on a large project, a single huge tool output (a whole JSON file, an unbounded `grep -r`, a full `git log`) can exhaust Claude Code's memory and crash the session. Filter, use `| head`, and query only what you need.
+
 ### 1. Scope
 
 Work out which documents are wanted. If the user just says "交付文档" or "把文档都做了", produce the standard set:
@@ -31,10 +33,10 @@ If the project has existing delivery docs, read them first. Keep the client-faci
 ### 2. Scan
 
 ```bash
-python3 <skill_dir>/scripts/scan_spring.py <project_root> --out /tmp/spring-scan.json
+python3 <skill_dir>/scripts/scan_spring.py <project_root>
 ```
 
-It is stdlib-only Python 3 and handles multi-module Maven, MyBatis/MyBatis-Plus/JPA, Swagger2, springdoc and plain Javadoc. Output keys:
+It is stdlib-only Python 3 and handles multi-module Maven, MyBatis/MyBatis-Plus/JPA, Swagger2, springdoc and plain Javadoc. It writes the full JSON to the system temp dir (or `--out <path>`) and prints the JSON's path plus a compact summary: scale, modules, conventions, warnings. **Never print or Read the whole JSON.** It is megabytes on a large project. Query the parts you need with short python one-liners (the summary's last line shows the pattern), one module or tag at a time. JSON keys:
 
 - `endpoints`: module (Maven/Gradle module dir), method, full path (class + method mapping, every combination), tag, summary/detail (from `@Operation`/`@ApiOperation`/Javadoc), params with `in` = path/query/body/header/form/query-object, required, default, return type
 - `models`: request/response classes reachable from endpoints, with field descriptions, validation constraints, examples, and nested/generic types
@@ -45,7 +47,7 @@ It is stdlib-only Python 3 and handles multi-module Maven, MyBatis/MyBatis-Plus/
 - `build`, `config_files`, `deploy_files`, `sql_files`, `mapper_xml`
 - `warnings`: endpoints without descriptions, entity/DDL mismatches, etc.
 
-Read `stats` and `warnings` first. The scanner is a structural parser, not javac. If something looks wrong (zero endpoints in an obviously web project, missing fields), open the source files and trust them over the JSON. If the project uses something the scanner does not see, such as WebFlux router functions, `@Path` JAX-RS, or controllers generated at build time, read those sources directly and say so in the doc's 说明 section.
+Start from the summary's warnings. The scanner is a structural parser, not javac. If something looks wrong (zero endpoints in an obviously web project, missing fields), open the source files and trust them over the JSON. If the project uses something the scanner does not see, such as WebFlux router functions, `@Path` JAX-RS, or controllers generated at build time, read those sources directly and say so in the doc's 说明 section.
 
 ### 3. Gather what the scan doesn't cover
 
@@ -74,7 +76,7 @@ Follow the template for each doc. Points that matter in practice:
 ### 5. Verify
 
 ```bash
-python3 <skill_dir>/scripts/check_docs.py /tmp/spring-scan.json <docs_dir>
+python3 <skill_dir>/scripts/check_docs.py <scan JSON path printed in step 2> <docs_dir>
 ```
 
 It fails if any endpoint path or table is missing from the docs, or if any secret value from the config files appears in them. Fix and rerun until it prints PASS. It also counts `【待确认】` per file.
