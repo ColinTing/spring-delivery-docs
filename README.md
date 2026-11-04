@@ -77,7 +77,7 @@ mkdir -p ~/.claude/skills && cp -r spring-delivery-docs/skills/* ~/.claude/skill
 
 # Word 导出依赖（扫描和检查只用 Python 标准库，不需要这些）
 brew install pandoc && pip3 install python-docx     # 或者：python3 -m pip install python-docx pypandoc_binary
-npm i -g @mermaid-js/mermaid-cli                    # 可选：流程图、状态图渲染成图片
+npm i -g @mermaid-js/mermaid-cli                    # 可选：流程图、状态图渲染成图片（没有权限就跳过，脚本会自动用 npx）
 ```
 
 ### Windows（PowerShell）
@@ -95,12 +95,13 @@ Copy-Item -Recurse -Force D:\IdeaProjects\spring-delivery-docs\skills\* "$env:US
 # Word 导出依赖：pypandoc_binary 自带 pandoc
 python -m pip install --user python-docx pypandoc_binary
 
-# 可选：流程图渲染成图片。跳过 Chrome 下载，脚本会自动使用本机的 Edge 或 Chrome
-$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npm i -g @mermaid-js/mermaid-cli
+# 可选：流程图渲染成图片（需要 Node.js）。不用全局安装，预热一次 npx 缓存即可，不需要管理员权限；
+# 约下载 300 MB，不下载 Chrome，脚本会自动使用本机的 Edge 或 Chrome。看到输出 11.4.2 就是成功了
+$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx -y @mermaid-js/mermaid-cli@11.4.2 --version
 ```
 
 - 没有 `python` 命令时换成 `py`；两个都没有就先装 [Python 3](https://www.python.org/downloads/)，安装时勾选 “Add python.exe to PATH”
-- pip 下载慢可以加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`，npm 下载慢可以加 `--registry=https://registry.npmmirror.com`
+- pip 下载慢可以加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`；npm 下载慢可以先执行 `npm config set registry https://registry.npmmirror.com`（只改当前用户的配置，不需要管理员权限）
 - 更新：`git -C D:\IdeaProjects\spring-delivery-docs pull`，然后重新执行上面的 `Copy-Item` 那一行
 - 路径以克隆到 `D:\IdeaProjects` 为例，放在别处的话替换成实际路径
 

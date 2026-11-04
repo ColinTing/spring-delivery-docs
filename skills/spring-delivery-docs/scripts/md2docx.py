@@ -65,16 +65,28 @@ def find_pandoc():
         return None
 
 
+MERMAID_CLI = "@mermaid-js/mermaid-cli@11.4.2"
+
+
+def which(name):
+    """Full path of a command. npm installs mmdc/npx as .cmd files on Windows, which
+    subprocess can only start by full path; Python 3.12.0 may return the extensionless
+    Git Bash script instead, so ask for the .cmd explicitly then."""
+    path = shutil.which(name)
+    if os.name == "nt" and path and not os.path.splitext(path)[1]:
+        path = shutil.which(name + ".cmd") or path
+    return path
+
+
 def mermaid_cmd(args):
-    # full paths matter on Windows: npm installs mmdc/npx as .cmd files, which
-    # subprocess can only start by full path
     if args.mmdc:
         parts = [args.mmdc] if os.path.exists(args.mmdc) else shlex.split(args.mmdc, posix=os.name != "nt")
-        return [shutil.which(parts[0]) or parts[0]] + parts[1:]
-    if shutil.which("mmdc"):
-        return [shutil.which("mmdc")]
-    if not args.no_npx and shutil.which("npx"):
-        return [shutil.which("npx"), "-y", "@mermaid-js/mermaid-cli@11.4.2"]
+        return [which(parts[0]) or parts[0]] + parts[1:]
+    if which("mmdc"):
+        return [which("mmdc")]
+    if not args.no_npx and which("npx"):
+        # npx installs into the user's npm cache, so no admin rights are needed
+        return [which("npx"), "-y", MERMAID_CLI]
     return None
 
 
@@ -101,9 +113,14 @@ def render_mermaid(md, workdir, args):
     blocks = list(MERMAID_RE.finditer(md))
     if not blocks:
         return md, 0, 0
-    cmd = mermaid_cmd(args)
-    if cmd is None:
-        print("  ! no Mermaid renderer (install: npm i -g @mermaid-js/mermaid-cli); diagrams kept as code")
+    cmd = args.mermaid
+    if not args.noted:  # once per run, and only when there are diagrams
+        args.noted = True
+        if cmd is None:
+            print("note: no Mermaid renderer found (needs Node.js), diagrams are kept as source")
+        elif MERMAID_CLI in cmd:
+            print(f"note: rendering diagrams via npx {MERMAID_CLI}; "
+                  "the first run downloads ~300 MB into the npm cache")
     # browsers to try, in order: --chrome, else an installed Chrome/Edge, else puppeteer's own
     local = None if args.chrome else local_browser()
     browsers = [args.chrome] if args.chrome else ([local, None] if local else [None])
@@ -511,6 +528,8 @@ def main():
     ap.add_argument("--no-npx", action="store_true", help="do not fall back to npx to fetch mermaid-cli")
     args = ap.parse_args()
     args.pandoc = find_pandoc()
+    args.mermaid = mermaid_cmd(args)
+    args.noted = False
     if not args.pandoc:
         sys.exit("pandoc not found. Install one of:\n"
                  f'  "{sys.executable}" -m pip install pypandoc_binary   (any OS, no admin rights; bundles pandoc)\n'
