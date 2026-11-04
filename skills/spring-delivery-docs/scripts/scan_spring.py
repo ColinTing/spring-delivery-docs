@@ -126,6 +126,29 @@ def clean_javadoc(raw):
 
 # --------------------------------------------------------------------------- helpers
 
+LEGACY_ENCODED = []  # files that were not UTF-8 and were read as GBK/GB18030
+
+
+def read_text(path):
+    """Read a source file: UTF-8, or GBK as in many older Chinese projects."""
+    data = open(path, "rb").read()
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    as_utf8 = data.decode("utf-8", errors="replace")
+    bad = as_utf8.count("\ufffd")
+    good = sum(1 for ch in as_utf8 if ord(ch) > 127) - bad
+    if bad <= good * 0.05:  # UTF-8 with a few stray bytes: keep it UTF-8
+        return as_utf8
+    try:
+        text = data.decode("gb18030")
+    except UnicodeDecodeError:
+        return as_utf8
+    LEGACY_ENCODED.append(path)
+    return text
+
+
 def split_top(text, sep=","):
     """Split on sep outside (), {}, <>, []."""
     parts, depth, buf = [], 0, []
@@ -739,7 +762,7 @@ DDL_RE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"]?(?:\w+[`\"
 
 def parse_sql_file(path):
     try:
-        text = open(path, encoding="utf-8", errors="replace").read()
+        text = read_text(path)
     except OSError:
         return []
     text = re.sub(r"--[^\n]*", "", text)
@@ -877,7 +900,15 @@ def walk(root):
             yield os.path.join(d, f)
 
 
+def utf8_output():
+    # Claude Code reads piped output as UTF-8; on Chinese Windows Python would emit GBK
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
+    utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root")
     ap.add_argument("--out", help="write JSON here instead of stdout")
@@ -910,7 +941,7 @@ def main():
     classes, ctxs, parse_errors = [], {}, []
     for p in sorted(java):
         try:
-            src = open(p, encoding="utf-8", errors="replace").read()
+            src = read_text(p)
             jf = JavaFile(rel(p), src)
         except Exception as e:  # never die on one odd file
             parse_errors.append(f"{rel(p)}: {type(e).__name__}: {e}")
@@ -940,7 +971,7 @@ def main():
     pom_infos = [parse_pom(p) for p in sorted(poms)]
     for pi in pom_infos:
         pi["file"] = rel(pi["file"])
-    blob = json.dumps(pom_infos) + " ".join(open(os.path.join(root, g), errors="replace").read() for g in gradles)
+    blob = json.dumps(pom_infos) + " ".join(read_text(os.path.join(root, g)) for g in gradles)
     has_main = [c["file"] for c in classes if "SpringBootApplication" in c["_anns"]]
 
     for t in tables:
@@ -957,6 +988,9 @@ def main():
         elif orphan:
             warnings.append(f"{len(orphan)} DDL tables have no annotated entity class (plain MyBatis/"
                             f"generator models or external tables?), e.g. {', '.join(orphan[:5])}")
+    if LEGACY_ENCODED:
+        warnings.append(f"{len(LEGACY_ENCODED)} files are not UTF-8 and were read as GBK, e.g. "
+                        f"{', '.join(rel(p) for p in LEGACY_ENCODED[:3])}")
 
     out = {
         "project_root": root,

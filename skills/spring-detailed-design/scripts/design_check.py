@@ -92,7 +92,15 @@ def sort_ids(ids):
     return sorted(ids, key=lambda x: (x.split("-")[0], int(x.split("-")[1])))
 
 
+def utf8_output():
+    # Claude Code reads piped output as UTF-8; on Chinese Windows Python would emit GBK
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
+    utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("design")
     ap.add_argument("--scan")

@@ -21,9 +21,11 @@ The design document serves two readers:
 
 ## Workflow
 
+**Running the scripts**: they are Python 3. On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`) there.
+
 ### 1. Read the inputs
 
-- **Requirement doc**: `.docx` → `pandoc -t gfm input.docx -o /tmp/req.md` (add `--extract-media=/tmp/req-media` and look at the images; prototypes and flowcharts carry half the requirements). `.pdf` → read it directly. For images and screenshots of prototypes, read the image.
+- **Requirement doc**: `.docx` → `pandoc -t gfm input.docx -o /tmp/req.md` (add `--extract-media=/tmp/req-media` and look at the images; prototypes and flowcharts carry half the requirements). `.pdf` → read it directly. For images and screenshots of prototypes, read the image. If `pandoc` is not on PATH but `pypandoc_binary` is installed (the usual setup on Windows), use its bundled binary: `"$(python -c 'import pypandoc; print(pypandoc.get_pandoc_path())')" -t gfm input.docx -o /tmp/req.md`. If neither exists, ask the user to install it (`python -m pip install pypandoc_binary`) or to save the document as PDF.
 - **Prior design versions or meeting notes**, if the user has them. If this is an update after a review meeting, go to "Updating after review" below.
 - **Existing code** (if run inside a Spring project): scan it with the sibling skill's scanner if available:
   ```bash

@@ -13,9 +13,11 @@ Usage:
     python3 md2docx.py <file.md|dir> [more ...] [--out-dir DIR] [--template ref.docx]
                        [--no-toc] [--mmdc CMD] [--chrome PATH] [--no-npx]
 
-Requires: pandoc, python-docx (pip3 install python-docx).
+Requires: python-docx, and pandoc either on PATH or bundled via `pip install pypandoc_binary`
+(the easy route on Windows: no admin rights, no winget).
 Mermaid rendering uses, in order: --mmdc, `mmdc` on PATH, `npx -y @mermaid-js/mermaid-cli`.
-Without any of them the diagram source is kept as a code block, with a note.
+It drives a local Chrome or Edge when one is installed, so no browser download is needed.
+Without a renderer the diagram source is kept as a code block, with a note.
 Nothing is sent to online services.
 """
 import argparse
@@ -24,6 +26,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,7 +39,8 @@ try:
     from docx.shared import Cm, Pt, RGBColor
     from docx.text.run import Run
 except ImportError:
-    sys.exit("python-docx is required:  pip3 install python-docx   (or: pip3 install --user python-docx)")
+    sys.exit(f'python-docx is required:  "{sys.executable}" -m pip install python-docx'
+             "   (add --user on a permissions error)")
 
 BR = "BR"  # private-use marker for <br> in table cells
 MERMAID_RE = re.compile(r"^```mermaid[ \t]*\n(.*?)^```[ \t]*$", re.S | re.M)
@@ -49,14 +53,48 @@ DIAGRAM_SCALE = 0.5  # diagrams are rendered at 2x for sharpness
 
 # --------------------------------------------------------------------------- mermaid
 
+def find_pandoc():
+    """pandoc on PATH, else the binary bundled with `pip install pypandoc_binary`."""
+    found = shutil.which("pandoc")
+    if found:
+        return found
+    try:
+        import pypandoc
+        return pypandoc.get_pandoc_path()
+    except (ImportError, OSError):
+        return None
+
+
 def mermaid_cmd(args):
+    # full paths matter on Windows: npm installs mmdc/npx as .cmd files, which
+    # subprocess can only start by full path
     if args.mmdc:
-        return args.mmdc.split()
+        parts = [args.mmdc] if os.path.exists(args.mmdc) else shlex.split(args.mmdc, posix=os.name != "nt")
+        return [shutil.which(parts[0]) or parts[0]] + parts[1:]
     if shutil.which("mmdc"):
-        return ["mmdc"]
+        return [shutil.which("mmdc")]
     if not args.no_npx and shutil.which("npx"):
-        return ["npx", "-y", "@mermaid-js/mermaid-cli@11.4.2"]
+        return [shutil.which("npx"), "-y", "@mermaid-js/mermaid-cli@11.4.2"]
     return None
+
+
+def local_browser():
+    """An installed Chrome/Edge, so mermaid-cli needs no browser download of its own."""
+    if os.name == "nt":
+        cands = []
+        for env in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.environ.get(env)
+            if base:
+                cands += [os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"),
+                          os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe")]
+    elif sys.platform == "darwin":
+        cands = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                 "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                 "/Applications/Chromium.app/Contents/MacOS/Chromium"]
+    else:
+        cands = [shutil.which(x) for x in ("google-chrome", "google-chrome-stable", "chromium",
+                                           "chromium-browser", "microsoft-edge")]
+    return next((c for c in cands if c and os.path.exists(c)), None)
 
 
 def render_mermaid(md, workdir, args):
@@ -66,11 +104,20 @@ def render_mermaid(md, workdir, args):
     cmd = mermaid_cmd(args)
     if cmd is None:
         print("  ! no Mermaid renderer (install: npm i -g @mermaid-js/mermaid-cli); diagrams kept as code")
-    pconf = os.path.join(workdir, "puppeteer.json")
-    pp = {"args": ["--no-sandbox"]}
-    if args.chrome:
-        pp["executablePath"] = args.chrome
-    json.dump(pp, open(pconf, "w"))
+    # browsers to try, in order: --chrome, else an installed Chrome/Edge, else puppeteer's own
+    local = None if args.chrome else local_browser()
+    browsers = [args.chrome] if args.chrome else ([local, None] if local else [None])
+    env = dict(os.environ)
+    if browsers[0]:
+        env["PUPPETEER_SKIP_DOWNLOAD"] = "1"  # keeps `npx` from fetching a second Chrome
+    pconfs = []
+    for k, b in enumerate(browsers):
+        pconf = os.path.join(workdir, f"puppeteer{k}.json")
+        pp = {"args": ["--no-sandbox"]}
+        if b:
+            pp["executablePath"] = b
+        json.dump(pp, open(pconf, "w"))
+        pconfs.append(pconf)
     cfg = os.path.join(workdir, "mermaid.json")
     json.dump({"theme": "default", "themeVariables": {
         "fontFamily": "PingFang SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"}}, open(cfg, "w"))
@@ -83,17 +130,26 @@ def render_mermaid(md, workdir, args):
         src = os.path.join(workdir, f"diagram{i}.mmd")
         png = os.path.join(workdir, f"diagram{i}.png")
         open(src, "w", encoding="utf-8").write(m.group(1))
-        done = False
-        if cmd:
+        done, err = False, ""
+        for pconf in list(pconfs) if cmd else []:
             try:
                 r = subprocess.run(cmd + ["-i", src, "-o", png, "-s", "2", "-b", "white",
                                           "-p", pconf, "-c", cfg],
-                                   capture_output=True, text=True, timeout=180)
+                                   capture_output=True, encoding="utf-8", errors="replace",
+                                   timeout=300, env=env)
                 done = r.returncode == 0 and os.path.exists(png)
                 if not done:
-                    print(f"  ! diagram {i + 1} failed: {(r.stderr or r.stdout).strip().splitlines()[-1:]}")
+                    lines = (r.stderr or r.stdout).strip().splitlines() or ["(no output)"]
+                    err = next((x.strip() for x in lines if "Error" in x), lines[-1].strip())
             except (subprocess.TimeoutExpired, OSError) as e:
-                print(f"  ! diagram {i + 1} failed: {e}")
+                err = str(e)
+            if done:
+                pconfs[:] = [pconf]  # stick with the browser that works
+                break
+        if cmd and not done:
+            print(f"  ! diagram {i + 1} failed: {err[:300]}")
+            if "Could not find" in err and not args.chrome:
+                print("    no browser found: install Chrome or Edge, or pass --chrome <path to chrome/msedge>")
         if done:
             ok += 1
             out.append(f"![{DIAGRAM_ALT}]({png})\n")
@@ -126,8 +182,8 @@ def set_fonts(style, east_asia, latin=LATIN, size=None, bold=None, color=None):
         fonts.attrib.pop(qn(k), None)
 
 
-def build_reference(path):
-    data = subprocess.run(["pandoc", "--print-default-data-file", "reference.docx"],
+def build_reference(path, pandoc):
+    data = subprocess.run([pandoc, "--print-default-data-file", "reference.docx"],
                           capture_output=True, check=True).stdout
     open(path, "wb").write(data)
     d = Document(path)
@@ -412,11 +468,11 @@ def convert(md_path, out_path, ref, args, own_template):
         md = re.sub(r"<br\s*/?>", BR, md)
         src = os.path.join(wd, "in.md")
         open(src, "w", encoding="utf-8").write(md)
-        cmd = ["pandoc", src, "-f", "gfm", "-o", out_path, "--reference-doc", ref,
+        cmd = [args.pandoc, src, "-f", "gfm", "-o", out_path, "--reference-doc", ref,
                "--resource-path", os.pathsep.join([wd, os.path.dirname(os.path.abspath(md_path))])]
         if not args.no_toc:
             cmd += ["--toc", "--toc-depth=3", "-M", "toc-title=目录"]
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             raise RuntimeError(r.stderr.strip())
     doc = Document(out_path)
@@ -436,7 +492,15 @@ def convert(md_path, out_path, ref, args, own_template):
     return n_diag, n_ok
 
 
+def utf8_output():
+    # Claude Code reads piped output as UTF-8; on Chinese Windows Python would emit GBK
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
+    utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="Markdown files or directories")
     ap.add_argument("--out-dir", help="default: next to each .md")
@@ -446,8 +510,12 @@ def main():
     ap.add_argument("--chrome", help="Chrome/Chromium executable for the Mermaid CLI")
     ap.add_argument("--no-npx", action="store_true", help="do not fall back to npx to fetch mermaid-cli")
     args = ap.parse_args()
-    if not shutil.which("pandoc"):
-        sys.exit("pandoc is required:  brew install pandoc   (Windows: winget install pandoc)")
+    args.pandoc = find_pandoc()
+    if not args.pandoc:
+        sys.exit("pandoc not found. Install one of:\n"
+                 f'  "{sys.executable}" -m pip install pypandoc_binary   (any OS, no admin rights; bundles pandoc)\n'
+                 "  brew install pandoc                                  (macOS)\n"
+                 "  https://github.com/jgm/pandoc/releases               (Windows .msi installer)")
 
     files = []
     for i in args.inputs:
@@ -462,7 +530,7 @@ def main():
         ref = args.template
         if not ref:
             ref = os.path.join(tmp, "reference.docx")
-            build_reference(ref)
+            build_reference(ref, args.pandoc)
         for f in files:
             out_dir = args.out_dir or os.path.dirname(os.path.abspath(f))
             os.makedirs(out_dir, exist_ok=True)

@@ -46,7 +46,15 @@ def config_secrets(root, files):
     return found
 
 
+def utf8_output():
+    # Claude Code reads piped output as UTF-8; on Chinese Windows Python would emit GBK
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
+    utf8_output()
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     scan = json.load(open(sys.argv[1], encoding="utf-8"))

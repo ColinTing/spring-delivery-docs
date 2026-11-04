@@ -11,6 +11,8 @@ The core rule: **every statement in a delivery doc must trace to code, SQL, conf
 
 ## Workflow
 
+**Running the scripts**: they are Python 3. On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`) there.
+
 ### 1. Scope
 
 Work out which documents are wanted. If the user just says "交付文档" or "把文档都做了", produce the standard set:

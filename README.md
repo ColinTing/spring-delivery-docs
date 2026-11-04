@@ -66,22 +66,43 @@ Claude：扫描到 13 个接口、3 张表……已生成 docs/delivery/ 下 4 �
 
 ## 安装
 
+### macOS / Linux
+
 ```bash
 git clone https://github.com/ColinTing/spring-delivery-docs.git
 
 # 所有项目可用（两个 skill 建议一起装，详细设计会调用交付文档的扫描器）
-cp -r spring-delivery-docs/skills/* ~/.claude/skills/
-# 或只给某个项目
-cp -r spring-delivery-docs/skills/* <your-project>/.claude/skills/
+mkdir -p ~/.claude/skills && cp -r spring-delivery-docs/skills/* ~/.claude/skills/
+# 或只给某个项目：cp -r spring-delivery-docs/skills/* <your-project>/.claude/skills/
+
+# Word 导出依赖（扫描和检查只用 Python 标准库，不需要这些）
+brew install pandoc && pip3 install python-docx     # 或者：python3 -m pip install python-docx pypandoc_binary
+npm i -g @mermaid-js/mermaid-cli                    # 可选：流程图、状态图渲染成图片
 ```
 
-扫描和检查只依赖 Python 3 标准库。生成 Word 版需要额外安装：
+### Windows（PowerShell）
 
-```bash
-brew install pandoc                       # Windows: winget install pandoc
-pip3 install python-docx
-npm i -g @mermaid-js/mermaid-cli          # 可选：把流程图、状态图渲染成图片；不装时首次运行会通过 npx 自动获取
+不需要 winget，也不需要管理员权限：
+
+```powershell
+cd D:\IdeaProjects
+git clone https://github.com/ColinTing/spring-delivery-docs.git
+
+# 复制 skill 到用户目录，所有项目可用
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills" | Out-Null
+Copy-Item -Recurse -Force D:\IdeaProjects\spring-delivery-docs\skills\* "$env:USERPROFILE\.claude\skills\"
+
+# Word 导出依赖：pypandoc_binary 自带 pandoc
+python -m pip install --user python-docx pypandoc_binary
+
+# 可选：流程图渲染成图片。跳过 Chrome 下载，脚本会自动使用本机的 Edge 或 Chrome
+$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npm i -g @mermaid-js/mermaid-cli
 ```
+
+- 没有 `python` 命令时换成 `py`；两个都没有就先装 [Python 3](https://www.python.org/downloads/)，安装时勾选 “Add python.exe to PATH”
+- pip 下载慢可以加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`，npm 下载慢可以加 `--registry=https://registry.npmmirror.com`
+- 更新：`git -C D:\IdeaProjects\spring-delivery-docs pull`，然后重新执行上面的 `Copy-Item` 那一行
+- 路径以克隆到 `D:\IdeaProjects` 为例，放在别处的话替换成实际路径
 
 ## 使用
 
