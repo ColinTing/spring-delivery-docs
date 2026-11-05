@@ -1,9 +1,9 @@
 ---
 name: spring-detailed-design
-description: Turn a business requirements document (需求文档 / PRD / 需求说明书 / 需求规格, in Word, PDF, Markdown, or pasted text) into a pre-development detailed design document (详细设计 / 详细设计说明书 / 概要设计 / 技术方案 / 开发设计) for a Java Spring project. The output has a business-confirmation part (numbered requirements, rules, flows, acceptance criteria, and a clarification question list for 需求评审 / 需求澄清 / 对齐颗粒度 with the business side) and a technical part (tables, APIs, state machines, task breakdown) that guides coding. Use when the user has a requirement doc and wants a design, wants to review/clarify requirements before coding, asks "这个需求怎么设计", "出个详细设计", "需求评审要准备什么", or wants to update a design after the business answered questions. Also use to check implementation progress against an existing design.
+description: Turn a business requirements document (需求文档 / PRD / 需求说明书 / 需求规格, in Word, PDF, Markdown, or pasted text) into a pre-development detailed design document (详细设计 / 详细设计说明书 / 概要设计 / 技术方案 / 开发设计) delivered as a Word .docx, for a Java Spring project. The document has a business-confirmation part (numbered requirements, rules, flows, acceptance criteria, and a clarification question list for 需求评审 / 需求澄清 / 对齐颗粒度 with the business side) and a technical part (tables, APIs, state machines, task breakdown) that guides coding. Use when the user has a requirement doc and wants a design, wants to review/clarify requirements before coding, asks "这个需求怎么设计", "出个详细设计", "需求评审要准备什么", or brings back a reviewed/commented design .docx or answers to update it. Also use to check implementation progress against an existing design.
 ---
 
-# 需求 → 详细设计
+# 需求 → 详细设计（Word）
 
 Most rework in project-based delivery comes from one gap: the business side wrote "支持优惠券", developers built their interpretation, and the mismatch surfaced at 验收. This skill closes that gap *before* coding. Every vague sentence becomes either a concrete rule the business signs off on, or a numbered question with a recommended answer.
 
@@ -12,6 +12,8 @@ The design document serves two readers:
 - **Part 1 (业务确认)**: business owners and PMs. Plain language, no class names. They should be able to read it and say "yes, that is what we mean", or point at a numbered item and correct it.
 - **Part 2 (技术设计)**: developers. Precise enough to code from without re-reading the requirement doc.
 
+The deliverable is a **Word .docx**, because review meetings run on Word. You draft in Markdown as a working file, and the bundled `md2docx.py` turns it into the .docx. The .docx is the master copy: `md2docx.py --read` turns it back into Markdown losslessly, Mermaid diagrams included (their source is kept in the image alt text). So never hand the user a .md unless they ask for one.
+
 ## Core rules
 
 1. **Never invent business rules silently.** A requirement doc always leaves gaps (limits, edge cases, permissions, what happens on failure). For each gap, raise a question `Q-xx` with 2–3 options and a recommended default. Then write the design using that default, marked inline as `【假设，见 Q-xx】`. The doc stays complete enough to estimate and code, and every guess stays visible and reversible.
@@ -19,25 +21,19 @@ The design document serves two readers:
 3. **Traceability.** Every requirement item `R-xx` must map to design elements and to at least one acceptance criterion `AC-xx`. That mapping is what lets you answer "is this requirement covered?" at review, and "is it done?" during development.
 4. **Fit the existing system.** A design that ignores existing conventions creates a second architecture inside the project.
 
+## Environment
+
+- This skill is two files: this SKILL.md and `md2docx.py` next to it. The script needs python-docx (`python -m pip install python-docx`). Diagrams need Node.js and are optional: without it, their source is kept in the document.
+- On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`). Put working files in the system temp dir by absolute path (on Windows, `/tmp` means different places to Git Bash and to native programs).
+- **Keep outputs bounded.** On a large project, one huge tool output (a whole directory listing, an unbounded `grep -r`, a full `git log`) can exhaust Claude Code's memory and crash the session. Use `-l`, `| head`, and targeted reads.
+
 ## Workflow
-
-**Running the scripts**: they are Python 3. On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`) there. Put intermediate files in the system temp dir by absolute path. On Windows `/tmp` means different places to Git Bash and to native programs like pandoc and python.
-
-**Keep outputs bounded**: on a large project, a single huge tool output (a whole JSON file, an unbounded `grep -r`, a full `git log`) can exhaust Claude Code's memory and crash the session. Filter, use `| head`, and query only what you need.
 
 ### 1. Read the inputs
 
-- **Requirement doc**: for `.docx` (also `.odt`, `.rtf`, `.html`) run
-  ```bash
-  python3 <skill_dir>/scripts/docx2md.py <requirement.docx>
-  ```
-  It writes Markdown to the system temp dir and prints its path, an outline (headings with line numbers), and the extracted images. Read the .md, in parts if it is long, jumping by the outline's line numbers. Then view the images: prototypes and flowcharts carry half the requirements. EMF/WMF drawings cannot be viewed, so ask for screenshots if they matter. `.pdf` → Read it directly. `.doc`/`.wps` → ask the user to save it as .docx. Screenshots and pasted text → use them as they are. If the script reports pandoc missing, give the user the install command it printed.
-- **Prior design versions or meeting notes**, if the user has them. If this is an update after a review meeting, go to "Updating after review" below.
-- **Existing code** (when run inside a Spring project):
-  ```bash
-  python3 <skill_dir>/scripts/scan_spring.py <project_root>
-  ```
-  It prints a compact summary and the path of the full JSON. Never print or Read the whole JSON. From the summary's conventions section, plus targeted one-liner queries for the existing tables and APIs the feature touches, learn the conventions you must follow: response wrapper (`Result<T>`), path style (`/api/v1/...`), table prefix, primary key strategy, BaseEntity audit fields, logic delete, existing enums, and which existing tables/APIs the new feature touches. If it finds no endpoints (not a Spring MVC project, or an unusual layout), read a couple of existing controllers, entities and the SQL directly.
+- **Requirement doc**: `.docx` → `python <skill_dir>/md2docx.py --read <requirement.docx>`. It writes Markdown to the system temp dir and prints the path and an outline (headings with line numbers). Read the .md, in parts if it is long. Then view the extracted images: prototypes and flowcharts carry half the requirements. EMF/WMF drawings cannot be viewed, so ask for screenshots if they matter. `.pdf` → Read it directly. `.doc`/`.wps` → ask the user to save it as .docx. Screenshots and pasted text → use them as they are.
+- **A design .docx that came back from review**: go to "Updating after review" below.
+- **Existing code** (when run inside a Spring project): learn its conventions by reading a few representative files with bounded commands, for example `git ls-files "*Controller.java" | head -40`, `grep -rl --include=*.java "class .*Result\b" . | head`, `git ls-files "*.sql" | head`. Read 2–3 controllers near the feature, the response wrapper (`Result`/`R`/`AjaxResult`), a base entity and 1–2 entities, the error-code enum or `@RestControllerAdvice`, the DDL or migrations, and `application*.yml`. Never copy passwords, keys or real hosts into the doc. Note the response wrapper, path style (`/api/v1/...`), table prefix, primary key strategy, audit fields and logic delete, how the current user is identified, error-code ranges already used, and which existing tables and APIs the feature touches.
 
 ### 2. Decompose into requirement items
 
@@ -47,74 +43,288 @@ Items the doc implies but never states (e.g. "the coupon must be returned when a
 
 ### 3. Run the granularity checklist
 
-Read `references/granularity-checklist.md` and walk every R item through it. This is where most of the value is. Each unanswered checklist point that matters becomes a `Q-xx`. Classify each question:
+Walk every R item through the checklist at the end of this file. This is where most of the value is. Each unanswered point that matters becomes a `Q-xx`. Classify each question:
 
 - **阻塞**: development cannot start, or the answer changes table structure or the API contract
 - **非阻塞**: the default can be used and changed later cheaply
 
 Keep questions answerable in a meeting: concrete, one decision per question, options listed, recommendation given with a one-line reason. "请明确优惠券规则" is useless. "同一订单能否叠加多张券？A 不可叠加（推荐，规则简单、财务对账清晰） B 不同类型可叠加 C 任意叠加" works.
 
-### 4. Write the design document
+### 4. Write the draft
 
-Follow `references/design-doc-template.md`. Default output: `docs/design/{功能名}-详细设计.md` in the project, in the user's language (default 中文). If the user names another place (often the folder holding the requirement doc), write there instead, with the .md and the .docx side by side, and write nothing into the source tree. Points that matter:
+Follow the template at the end of this file, in the user's language (default 中文). Write the draft to `<system temp dir>/spring-detailed-design/{功能名}-详细设计.md`. The file name becomes the Word file's name. Points that matter:
 
 - Part 1 contains no code identifiers except where business people already use them (e.g. status names they know).
 - Use Mermaid for flows (`flowchart`), state machines (`stateDiagram-v2`) and key interactions (`sequenceDiagram`). Business people do read diagrams.
-- **API addresses are written `` `METHOD /path` ``**, and table design headings are `` #### `table_name` 说明 ``. The checker relies on this form.
+- **API addresses are written `` `METHOD /path` ``**, and table design headings are `` #### `table_name` 说明（新增|修改） ``.
 - Extending an existing table: list only the new or changed columns, and say "修改" in the heading.
-- DDL in the doc must be executable for the project's database (check the driver in the scan).
+- DDL must be executable for the project's database.
 - Task breakdown: each task references its R items. Use relative size (S/M/L) unless the user asks for person-days.
 
-### 5. Check
+### 5. Convert to Word and check
 
 ```bash
-python3 <skill_dir>/scripts/design_check.py docs/design/xxx-详细设计.md
+python <skill_dir>/md2docx.py <draft.md> --out-dir <target dir> [--template 公司模板.docx]
 ```
 
-It fails if any R item lacks an acceptance criterion or is not referenced in the technical part, or if a referenced Q/R/AC/D id is never defined. It also reports open and blocking question counts. Fix and rerun until PASS.
+Target dir: where the user asked for it (often the folder holding the requirement doc), else `docs/design/` in the project. Write nothing else into the source tree. Read the output:
+
+- `[check] … -- ok`: traceability holds. Every `!` line is a defect: an R without an AC, an R missing from the technical part, an id used but never defined, or a 【假设】 left for an answered question. Fix the draft and convert again until the line ends with `ok`.
+- `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
+- `no Mermaid renderer` / `diagrams 0/N`: the .docx is still produced, with the diagram source kept. Rendering needs Node.js, but no global install: the script falls back to `npx` (installs into the user's npm cache, no admin rights; the first run downloads ~300 MB). To warm it up once: `npx -y @mermaid-js/mermaid-cli@11.4.2 --version` with `PUPPETEER_SKIP_DOWNLOAD=1` set (PowerShell: `$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx ...`). It uses the installed Chrome/Edge. Never suggest running npm as administrator.
+- `cannot write … close it in Word first`: the user has the file open.
+- If the user has a company Word template, pass `--template`: its styles, header and footer are kept.
+
+Never send document content to online services: design docs are confidential to the client.
 
 ### 6. Hand over
 
 Tell the user:
-- R/AC/Q counts. List the **blocking questions** first, ready to paste into the meeting invite.
-- The assumptions with the biggest impact if wrong.
-- Suggested next step: review Part 1 with the business side, then come back with the answers.
-
-### 7. Word 版
-
-Review meetings run on Word documents, so **produce a .docx by default** after the check passes:
-
-```bash
-python3 <skill_dir>/scripts/md2docx.py <path to 详细设计.md> [--template 公司模板.docx]
-```
-
-It writes the .docx next to the .md. It renders the Mermaid flow/state/sequence diagrams to images, formats tables (borders, repeating header row, `<br>` option lists as real line breaks), and applies Chinese fonts, A4, a table of contents and page numbers. It highlights 【假设】 in orange and 【待确认】 in red, so the business side sees at a glance what still needs their decision. Read its output:
-
-- `pandoc not found` / `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
-- `diagrams 0/N` or `no Mermaid renderer`: the docx is still produced with the diagram source kept. Rendering needs Node.js. No global install is needed: the script falls back to `npx`, which installs into the user's npm cache (no admin rights). On the first run that downloads ~300 MB and can take minutes. Warming the cache once avoids that: `npx -y @mermaid-js/mermaid-cli@11.4.2 --version` with `PUPPETEER_SKIP_DOWNLOAD=1` set (PowerShell: `$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx ...`). The script drives the installed Chrome/Edge, so no browser download is needed. Never suggest running npm as administrator.
-- If the user has a company Word template, ask for it and pass `--template`. Tables and page numbers are still applied on top.
-
-Tell the user that Word asks to update fields when the file opens. That fills in the table of contents. Answer yes. Never send document content to online diagram services, because design docs are confidential to the client.
-
-The Markdown is the master copy. If the business side sends back an edited or commented .docx, convert it with `python3 <skill_dir>/scripts/docx2md.py their.docx --track-changes all`. Their insertions, deletions and comments stay visible as `[text]{.insertion author=...}`, `{.deletion ...}` and `{.comment-start ...}` spans. Fold them into the Markdown as review answers (see below) and regenerate the .docx. Never edit the .docx directly.
+- the .docx path, and the R/AC/Q counts. List the **blocking questions** first, ready to paste into the meeting invite.
+- the assumptions with the biggest impact if wrong.
+- that Word asks to update fields when the file opens. Answering yes fills in the table of contents.
+- the next step: review Part 1 with the business side, then come back with the answers or their marked-up .docx.
 
 ## Updating after review
 
-When the user brings answers ("Q-03 选 B，Q-05 上限改成 3 张"):
+The user brings answers ("Q-03 选 B，Q-05 上限改成 3 张"), or the .docx with the business side's tracked changes and comments.
 
-1. Update each answered Q's status to `已确认` and record the answer and date. Keep the row, because the question history is part of the agreement.
-2. Remove the matching `【假设，见 Q-xx】` markers and rewrite the affected rules, tables, APIs and ACs. Search the whole doc for the Q id, since one answer usually touches several sections.
-3. New questions raised in the meeting get new ids. Never renumber existing ones.
-4. Add a row to 修订记录 and bump the version.
-5. Rerun the checker, then regenerate the .docx. Name it with the version (e.g. `优惠券-详细设计-v0.2.docx`, using `--out-dir` or by renaming) so the copy sent after the meeting is distinguishable from the one reviewed.
+1. `python <skill_dir>/md2docx.py --read <latest design .docx>`. Their insertions come back as `[+text+]`, deletions as `[-text-]`, comments as `[批注 作者：内容]`, and diagrams as Mermaid. This Markdown is the new draft.
+2. Update each answered Q's status to `已确认` and record the answer and date. Keep the row, because the question history is part of the agreement.
+3. Remove the matching `【假设，见 Q-xx】` markers and rewrite the affected rules, tables, APIs and ACs. Search the whole draft for the Q id, since one answer usually touches several sections.
+4. Resolve every review mark: apply or reject it, and note the outcome in the Q table or 修订记录. None may remain in the new version.
+5. New questions get new ids. Never renumber existing ones.
+6. Add a row to 修订记录, bump the version, and save the draft as `{功能名}-详细设计-v0.2.md` so the new .docx does not overwrite the reviewed one. Convert. The check flags assumptions left for answered questions.
 
 ## Checking implementation progress
 
-During or after development, compare the design with the code:
+Read the design (`--read` if you only have the .docx). For each API in the 接口清单 and each table in the 表清单, look it up in the code with a bounded search, e.g. `grep -rn -F --include=*.java '"/api/v1/coupons' . | head` and the table name in `*.sql`, `@TableName` or `@Table`. Report a table of done / missing / changed, plus endpoints under the same path prefix that the design does not mention. Treat differences as questions to resolve, not automatically as code bugs: sometimes the code is right and the design should be updated.
 
-```bash
-python3 <skill_dir>/scripts/scan_spring.py <project_root>
-python3 <skill_dir>/scripts/design_check.py docs/design/xxx-详细设计.md --scan <scan JSON path it printed>
+## Granularity checklist
+
+Walk each R item through the relevant groups. Skip groups that obviously do not apply (a read-only report has no concurrency questions). A point becomes a Q only when the requirement doc does not answer it **and** the answer changes behavior, data, or effort. Do not pad the question list. Ten sharp questions get answered; sixty get ignored.
+
+### 1. 数据与字段
+- 每个输入字段：必填？类型/长度/格式？取值范围？默认值？能否修改，谁能改，改了之后历史数据怎么办？
+- 金额：单位（元/分）、精度、舍入方式、能否为 0 或负数
+- 时间：精确到天还是秒？“截止 3 月 31 日”是含当天 23:59:59 吗？时区？
+- 唯一性：名称、编号能否重复？编号规则（前缀、日期、流水号）？
+- 枚举：值的完整列表？以后会扩展吗？
+
+### 2. 规则与边界
+- 数量上限：每人/每天/每单/总量的上限？超出时提示什么？
+- 叠加与互斥：多个规则同时满足时怎么算？优先级？
+- 边界值：等于门槛时算不算满足（≥ 还是 >）？
+- 计算顺序：先折扣还是先满减？分摊到明细时如何分配，尾差给谁？
+
+### 3. 状态与生命周期
+- 对象有哪些状态？每个状态允许哪些操作？
+- 状态之间如何流转、由谁触发（用户、管理员、定时任务、外部回调）？
+- 能否撤销或回退？过期、作废、删除的区别？删除是物理删除还是逻辑删除，删除后关联数据怎么显示？
+
+### 4. 角色与权限
+- 谁能看、谁能操作？按角色还是按数据范围（本人、本部门、本门店）？
+- 需要审批吗？几级审批？审批人是谁？驳回之后怎么办？
+- 操作是否需要留痕（操作日志：谁、什么时间、改了什么）？
+
+### 5. 异常与失败
+- 外部系统（支付、短信、物流）失败、超时：重试？提示用户？人工处理？
+- 用户重复提交、并发抢同一资源（库存、名额、券）：结果是什么？
+- 中途失败的数据如何回滚或补偿？
+- 用户看到的提示文案由谁定？
+
+### 6. 联动与影响
+- 这个功能影响哪些已有功能（订单、退款、报表、对账）？
+- 已有数据要迁移或初始化吗？上线时老数据怎么处理？
+- 退款、取消、售后时这个功能的数据怎么处理（券退还？积分扣回？）
+
+### 7. 查询与展示
+- 列表：哪些筛选条件、排序规则、默认排序？分页大小？
+- 显示哪些字段？敏感信息要脱敏吗？
+- 需要导出吗？什么格式，数据量多大？导出是否受权限控制？
+
+### 8. 通知与触达
+- 什么事件需要通知、通知谁、通过什么渠道（站内信、短信、邮件、企业微信）？
+- 通知失败要处理吗？用户能退订吗？
+
+### 9. 非功能
+- 预期数据量（一年多少条）与并发（峰值 QPS、是否有秒杀或活动）
+- 响应时间要求
+- 数据保留期限、合规要求（个人信息、财务数据）
+- 需要兼容的端（PC、H5、小程序、App）以及版本
+
+### 10. 上线与运营
+- 需要后台配置开关吗？能否灰度？
+- 需要哪些统计报表来衡量效果？
+- 上线时间约束（活动日期）会不会影响范围（先上哪些、后上哪些）？
+
+## Design document template
+
+Keep the id formats exactly, because `md2docx.py` checks them:
+
+- Requirement items `R-01`: the **first cell** of a row in the 需求清单 table
+- Acceptance criteria `AC-01`: first cell of a row in the 验收标准 table, with the R id(s) in the second cell
+- Questions `Q-01`: first cell of a row in the 待澄清问题 table; status in the last cell (待确认 / 已确认：答复与日期 / 已取消)
+- Design decisions `D-01`, tasks `T-01`: first cell of their tables
+- The technical part starts with a heading containing 技术设计
+- APIs `` `METHOD /path` ``; table design headings `` #### `table_name` 说明（新增|修改） ``
+
+Everything else is guidance. Drop a subsection that truly does not apply, and write "无" rather than leaving an empty heading where the reader would expect content (e.g. 权限).
+
+````markdown
+# {功能名称} 详细设计
+
+| 项目 | 内容 |
+|---|---|
+| 版本 | v0.1（评审稿） |
+| 需求来源 | {需求文档名称、版本、日期} |
+| 所属系统 | {项目名，若有扫描结果则写模块} |
+| 编写日期 | {YYYY-MM-DD} |
+| 状态 | 待评审 / 已确认 / 开发中 |
+
+## 修订记录
+
+| 版本 | 日期 | 说明 |
+|---|---|---|
+| v0.1 | {date} | 初稿，待需求评审 |
+
+---
+
+# 第一部分 业务确认
+
+> 本部分供业务方确认。请重点查看 **1.5 待澄清问题**，并逐条核对 **1.2 需求清单** 和 **1.4 验收标准** 是否符合预期。
+
+## 1.1 背景与目标
+{两三句：为什么做、做完后谁得到什么。来自需求文档，不要发挥}
+
+**范围内**：{列表}
+**范围外**：{列表，明确不做什么，避免验收时扩展}
+
+## 1.2 需求清单
+
+| 编号 | 需求描述 | 角色 | 来源 | 优先级 |
+|---|---|---|---|---|
+| R-01 | 运营可以创建满减券，设置门槛金额和减免金额 | 运营 | 需求文档 2.1 | 必须 |
+| R-02 | … | | 推导，见 Q-03 | |
+
+## 1.3 业务规则与流程
+
+### 1.3.1 业务流程
+```mermaid
+flowchart TD
 ```
 
-It lists designed APIs, tables and columns that are not in the code yet, plus code endpoints under the same path prefixes that the design does not mention (scope creep, or the design needs an update). Report this as a progress table, and treat differences as questions to resolve, not automatically as code bugs: sometimes the code is right and the design should be updated.
+### 1.3.2 业务规则
+
+| 规则 | 内容 | 关联需求 |
+|---|---|---|
+| 门槛判定 | 订单商品金额 ≥ 门槛金额时可用【假设，见 Q-02】 | R-03 |
+
+### 1.3.3 状态说明
+```mermaid
+stateDiagram-v2
+```
+
+| 状态 | 含义 | 允许的操作 |
+|---|---|---|
+
+### 1.3.4 角色与权限
+
+| 角色 | 可执行操作 | 数据范围 |
+|---|---|---|
+
+### 1.3.5 页面与字段
+{按页面列出：字段、是否必填、校验规则、提示文案。有原型就引用原型页码}
+
+### 1.3.6 异常场景
+
+| 场景 | 系统行为 | 用户看到的提示 |
+|---|---|---|
+
+## 1.4 验收标准
+
+| 编号 | 关联需求 | 前置条件 | 操作 | 预期结果 |
+|---|---|---|---|---|
+| AC-01 | R-01 | 运营已登录 | 创建门槛 100 减 10 的券 | 创建成功，状态为“未开始” |
+
+{每个 R 至少一条；有边界值的规则要有边界用例}
+
+## 1.5 待澄清问题
+
+| 编号 | 问题 | 选项 | 建议 | 影响 | 类型 | 状态 |
+|---|---|---|---|---|---|---|
+| Q-01 | 同一订单能否使用多张券？ | A 不可叠加<br>B 不同类型可叠加<br>C 任意叠加 | A，规则简单、对账清晰 | R-04，表结构 | 阻塞 | 待确认 |
+
+{类型：阻塞 / 非阻塞。状态：待确认 / 已确认（写明答复与日期）/ 已取消}
+
+---
+
+# 第二部分 技术设计
+
+## 2.1 总体设计
+- 涉及模块：{新增/修改的包、类}
+- 与现有功能的关系：{哪些现有接口、表、流程被修改}
+- 遵循的现有约定：{来自扫描：Result 包装、路径前缀、主键策略、逻辑删除、审计字段}
+
+```mermaid
+sequenceDiagram
+```
+
+## 2.2 数据库设计
+
+### 2.2.1 表清单
+
+| 表名 | 说明 | 变更类型 | 关联需求 |
+|---|---|---|---|
+
+### 2.2.2 表结构
+
+#### `t_coupon` 优惠券模板（新增）
+
+| 字段 | 类型 | 允许空 | 默认值 | 说明 |
+|---|---|---|---|---|
+
+索引：{名称、字段、原因}
+
+#### `t_order` 订单表（修改）
+
+| 字段 | 类型 | 允许空 | 默认值 | 说明 |
+|---|---|---|---|---|
+{只列新增或修改的字段}
+
+### 2.2.3 DDL
+```sql
+```
+
+## 2.3 接口设计
+
+### 2.3.1 接口清单
+
+| 接口 | 说明 | 调用方 | 关联需求 |
+|---|---|---|---|
+| `POST /api/v1/coupons` | 创建优惠券 | 管理后台 | R-01 |
+
+### 2.3.2 接口详情
+{每个接口：请求参数表（字段/类型/必填/校验/说明）、响应字段表、错误码。复用项目的统一响应结构}
+
+## 2.4 关键逻辑
+{状态机实现、计算公式、并发控制（锁/乐观锁/唯一索引）、幂等、事务边界、定时任务（cron、处理量、失败重试）、与外部系统交互。每段注明关联需求}
+
+## 2.5 设计决策
+
+| 编号 | 决策 | 原因 | 备选方案 |
+|---|---|---|---|
+| D-01 | 领券用唯一索引 (coupon_id, user_id) 防重复 | 并发下比查询后插入可靠 | 分布式锁 |
+
+## 2.6 非功能设计
+{性能、数据量估算、缓存、安全（越权校验）、日志与审计}
+
+## 2.7 开发任务拆分
+
+| 任务 | 内容 | 关联需求 | 规模 | 依赖 |
+|---|---|---|---|---|
+| T-01 | 建表与实体 | R-01…R-05 | S | Q-01 |
+
+## 2.8 上线与回滚
+{DDL 执行顺序、配置项、数据初始化、开关、回滚方案}
+````

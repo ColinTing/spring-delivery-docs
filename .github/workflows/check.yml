@@ -13,28 +13,42 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Shared scripts are in sync
+      - name: Shared md2docx.py is in sync
         run: python tools/sync_shared.py --check
 
       - name: Scripts compile
-        run: python -m py_compile skills/*/scripts/*.py tools/*.py
+        run: python -m py_compile skills/spring-delivery-docs/scripts/*.py skills/spring-detailed-design/*.py tools/*.py
 
-      - name: Install Word export dependencies
-        run: python -m pip install python-docx pypandoc_binary
+      - name: Install python-docx (the only dependency)
+        run: python -m pip install python-docx
 
       - name: spring-delivery-docs on the example project
         run: |
           S=skills/spring-delivery-docs/scripts
           python $S/scan_spring.py examples/demo-shop --out /tmp/scan.json
           python $S/check_docs.py /tmp/scan.json examples/demo-shop/docs/delivery
-          python $S/md2docx.py examples/demo-shop/docs/delivery --out-dir /tmp/delivery-docx --no-npx
+          python $S/md2docx.py examples/demo-shop/docs/delivery --out-dir /tmp/delivery-docx --no-toc
 
-      - name: spring-detailed-design on the example project
+      - name: spring-detailed-design, Markdown -> Word -> Markdown is lossless
         run: |
-          S=skills/spring-detailed-design/scripts
-          D=examples/demo-shop/docs/design/优惠券-详细设计.md
-          python $S/docx2md.py examples/demo-shop/docs/requirements/优惠券需求说明书V1.0.docx --out-dir /tmp/req
-          python $S/scan_spring.py examples/demo-shop --out /tmp/scan2.json
-          python $S/design_check.py "$D"
-          python $S/design_check.py "$D" --scan /tmp/scan2.json
-          python $S/md2docx.py "$D" --out-dir /tmp/design-docx --no-npx
+          M=skills/spring-detailed-design/md2docx.py
+          python $M examples/demo-shop/docs/requirements/优惠券需求说明书V1.0.docx --read --out-dir /tmp/req
+          for f in examples/demo-shop/docs/design/*.md examples/demo-shop/docs/delivery/*.md; do
+            python $M "$f" --out-dir /tmp/rt-docx | tee /tmp/out.txt
+            ! grep -qE "^  ! ((R|AC|Q|D|T)-|assumption)" /tmp/out.txt   # traceability findings fail the build
+            python $M --read "/tmp/rt-docx/$(basename "${f%.md}").docx" --out-dir /tmp/rt-md > /dev/null
+          done
+          python - <<'EOF'
+          import glob, os, re, sys
+          def norm(p):
+              out = []
+              for line in open(p, encoding="utf-8").read().splitlines():
+                  if line.strip():
+                      line = "|---|" if re.match(r"^\|[\s:|-]+\|$", line.rstrip()) else line.rstrip()
+                      out.append(re.sub(r"\s*\|\s*", " | ", line).strip())
+              return out
+          bad = [f for f in glob.glob("examples/demo-shop/docs/*/*.md")
+                 if norm(f) != norm("/tmp/rt-md/" + os.path.basename(f))]
+          print("not lossless:", bad or "none")
+          sys.exit(1 if bad else 0)
+          EOF

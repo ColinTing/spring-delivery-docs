@@ -50,9 +50,9 @@
       "skill": "spring-detailed-design",
       "prompt": "这是运营给的优惠券需求文档 docs/requirements/优惠券需求说明书V1.0.docx，出个详细设计，周三要和他们评审",
       "project": "examples/demo-shop",
-      "expected_output": "docs/design/ 下的详细设计；design_check.py PASS",
+      "expected_output": "docs/design/ 下的详细设计 .docx（不交付 .md）；转换时 [check] 显示 ok",
       "expectations": [
-        "design_check.py 输出 PASS",
+        "md2docx.py 转换时输出的 [check] 行以 ok 结尾",
         "需求清单至少 10 条，包含由“订单取消退回”推导出的退券需求",
         "待澄清问题包含：适用范围、有效期形式、能否叠加、门槛是否含等于、停用后已领券能否使用",
         "指出系统目前没有取消订单功能，R-10 依赖它",
@@ -60,21 +60,24 @@
         "技术设计沿用 Result<T>、/api/v1 前缀、t_ 表前缀、BaseEntity 字段、ASSIGN_ID 主键",
         "领券防超发和防重复领取有具体方案（条件更新、唯一索引），而不是笼统地写“加锁”",
         "第一部分业务确认中不出现 Java 类名",
-        "折扣计算的验收标准包含舍入和封顶的边界用例"
+        "折扣计算的验收标准包含舍入和封顶的边界用例",
+        "交付物只有 .docx，Markdown 草稿写在系统临时目录"
       ]
     },
     {
       "id": 5,
       "skill": "spring-detailed-design",
       "prompt": "评审开完了：Q-01 选 A，Q-04 选 B 满减和折扣各一张，Q-06 选 A 超时 30 分钟自动取消，新问题：券能不能在商品详情页直接显示“券后价”",
-      "project": "examples/demo-shop（含 eval 4 的设计文档）",
-      "expected_output": "更新后的设计文档 v0.2",
+      "project": "examples/demo-shop（含 eval 4 生成的详细设计 .docx）",
+      "expected_output": "新版本 优惠券-详细设计-v0.2.docx，原版本不被覆盖",
       "expectations": [
+        "先用 md2docx.py --read 读取上一版 .docx 作为草稿，而不是从头重写",
         "Q-01、Q-04、Q-06 状态改为已确认，并写明答复和日期，行没有被删除",
         "Q-04 改为 B 后，表结构从单个 user_coupon_id 改为可记录两张券（关联表或两个字段），计算顺序和分摊规则作为新问题或新规则出现",
         "新增问题使用新编号 Q-13，没有重排已有编号",
-        "修订记录新增 v0.2 一行",
-        "design_check.py PASS，不残留已确认问题的【假设】"
+        "修订记录新增 v0.2 一行，输出文件名带 -v0.2",
+        "[check] 以 ok 结尾，不残留已确认问题的【假设】，也不残留 [+ +] / [- -] / [批注] 标记",
+        "流程图、状态图仍然存在（从上一版 .docx 的替代文字还原）"
       ]
     },
     {
@@ -84,9 +87,9 @@
       "project": "examples/demo-shop（含设计文档，代码未实现）",
       "expected_output": "进度报告",
       "expectations": [
-        "运行了 scan_spring.py 和 design_check.py --scan",
+        "用有输出上限的 grep 逐个查找接口清单中的接口和表清单中的表，没有整目录输出",
         "报告 7 个新增接口均未实现、3 张表（含 t_order 修改）未完成",
-        "POST /api/v1/orders 被识别为修改接口，而不是已完成",
+        "POST /api/v1/orders 被识别为需要修改的已有接口，而不是已完成",
         "没有把 GET /api/v1/orders/mine 当成超出设计的范围"
       ]
     },
@@ -95,13 +98,13 @@
       "skill": "spring-detailed-design",
       "prompt": "/spring-detailed-design 需求文档是 ~/Downloads/迭代9/优惠券需求说明书V1.0.docx，出个详细设计，也放到这个目录下。当前目录是源代码目录",
       "project": "examples/demo-shop，只安装 spring-detailed-design（没有 spring-delivery-docs），需求文档放在项目外的 Downloads/迭代9/",
-      "expected_output": "Downloads/迭代9/ 下的 详细设计 .md 和 .docx",
+      "expected_output": "Downloads/迭代9/ 下只有详细设计 .docx",
       "expectations": [
-        "用 skill 自带的 docx2md.py 读取需求文档，没有调用 spring-delivery-docs 目录下的脚本",
-        "用 skill 自带的 scan_spring.py 扫描当前目录，没有把扫描 JSON 整份打印或读取",
-        "详细设计的 .md 和 .docx 都写在 Downloads/迭代9/，源代码目录里没有新增文件",
-        "design_check.py 输出 PASS",
-        "技术设计沿用扫描摘要里的约定（Result<T>、/api/v1、t_ 表前缀）"
+        "用 skill 自带的 md2docx.py --read 读取需求文档",
+        "通过少量有代表性的文件了解现有代码约定，命令输出有上限",
+        "详细设计 .docx 写在 Downloads/迭代9/，那里没有 .md；源代码目录里没有新增文件",
+        "[check] 以 ok 结尾",
+        "技术设计沿用现有约定（Result<T>、/api/v1、t_ 表前缀）"
       ]
     }
   ]

@@ -17,7 +17,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = os.path.join(ROOT, "skills", "spring-delivery-docs", "scripts")
-SHARED = {"spring-detailed-design": ["scan_spring.py", "md2docx.py"]}
+# skill -> {shared file: path inside that skill}
+SHARED = {"spring-detailed-design": {"md2docx.py": "md2docx.py"}}
 
 
 def same(a, b):
@@ -33,9 +34,9 @@ def main():
     args = ap.parse_args()
     stale = []
     for skill, files in SHARED.items():
-        for name in files:
+        for name, target in files.items():
             src = os.path.join(SOURCE, name)
-            dst = os.path.join(ROOT, "skills", skill, "scripts", name)
+            dst = os.path.join(ROOT, "skills", skill, target)
             rel = os.path.relpath(dst, ROOT)
             if same(src, dst):
                 print(f"ok      {rel}")

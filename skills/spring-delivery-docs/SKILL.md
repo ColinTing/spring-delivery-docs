@@ -97,11 +97,14 @@ python3 <skill_dir>/scripts/md2docx.py <docs_dir>            # every .md in the 
 python3 <skill_dir>/scripts/md2docx.py <docs_dir> --template 公司模板.docx   # company styles
 ```
 
-It renders Mermaid diagrams to images, adds table borders and shaded, repeating header rows, keeps `<br>` line breaks, applies Chinese fonts, A4 page size, a table of contents and page numbers, and highlights 【待确认】 (red) and 【假设】 (orange). Read its output:
+It needs only python-docx. It renders Mermaid diagrams to images, adds bordered tables with shaded, repeating header rows, applies Chinese fonts, A4 page size, a table of contents and page numbers, and highlights 【待确认】 (red) and 【假设】 (orange). Read its output:
 
-- `pandoc is required` / `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
-- `diagrams 0/N` or `no Mermaid renderer`: the docx is still produced with the diagram source kept. Rendering needs Node.js. No global install is needed: the script falls back to `npx`, which installs into the user's npm cache (no admin rights). On the first run that downloads ~300 MB and can take minutes. Warming the cache once avoids that: `npx -y @mermaid-js/mermaid-cli@11.4.2 --version` with `PUPPETEER_SKIP_DOWNLOAD=1` set (PowerShell: `$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx ...`). The script drives the installed Chrome/Edge, so no browser download is needed. Never suggest running npm as administrator.
-- If the user has a company Word template, ask for it and pass `--template`. Tables and page numbers are still applied on top.
+- `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
+- `no Mermaid renderer` / `diagrams 0/N`: the docx is still produced with the diagram source kept. Rendering needs Node.js. No global install is needed: the script falls back to `npx`, which installs into the user's npm cache (no admin rights). On the first run that downloads ~300 MB and can take minutes. Warming the cache once avoids that: `npx -y @mermaid-js/mermaid-cli@11.4.2 --version` with `PUPPETEER_SKIP_DOWNLOAD=1` set (PowerShell: `$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx ...`). The script drives the installed Chrome/Edge, so no browser download is needed. Never suggest running npm as administrator.
+- `cannot write … close it in Word first`: the user has the file open.
+- If the user has a company Word template, ask for it and pass `--template`. Its styles, header and footer are kept.
+
+To read a .docx the client sends back (with their tracked changes and comments), use `python3 <skill_dir>/scripts/md2docx.py --read <file.docx>`.
 
 Tell the user that Word asks to update fields when the file opens. That fills in the table of contents. Answer yes.
 

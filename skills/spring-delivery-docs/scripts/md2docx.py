@@ -1,36 +1,26 @@
 #!/usr/bin/env python3
-"""Convert delivery / design Markdown into Word (.docx) ready for review meetings.
+# Pure ASCII on purpose (Chinese text is written as \u escapes): the file then runs whatever
+# encoding it is saved in after being copied or pasted onto another machine.
+"""Markdown <-> Word for design and delivery docs. Needs only python-docx.
 
-Shared by the spring-delivery-docs and spring-detailed-design skills, so each skill
-folder works on its own. Edit the copy in skills/spring-delivery-docs/scripts/, then
-run `python tools/sync_shared.py` to update the other skill's copy.
+  python md2docx.py <doc.md> [--out-dir DIR] [--template \u516c\u53f8\u6a21\u677f.docx]
+      Word with Chinese layout: \u5b8b\u4f53/\u9ed1\u4f53, A4, table of contents, page numbers, bordered
+      tables with repeating header rows, \u3010\u5f85\u786e\u8ba4\u3011 red, \u3010\u5047\u8bbe\u3011 orange. Mermaid blocks become
+      images when Node.js is available (mmdc, or npx using the installed Chrome/Edge),
+      otherwise their source is kept. Design docs also get a traceability check.
+  python md2docx.py --read <doc.docx> [--out-dir DIR]
+      Markdown for reading or editing, with an outline printed instead of the content.
+      Tracked changes become [+added+] / [-deleted-], comments [\u6279\u6ce8 author\uff1atext].
+      Diagrams made by this script come back as Mermaid (the source is in the alt text).
 
-What it adds over a bare `pandoc x.md -o x.docx`:
-  - Mermaid diagrams rendered to images (Word cannot render Mermaid)
-  - bordered tables, shaded header row repeated across pages, 9pt table text
-  - <br> inside table cells kept as real line breaks
-  - Chinese layout: 宋体 body, 黑体 headings, A4, table of contents, page numbers
-  - 【待确认…】 highlighted red, 【假设…】 highlighted orange, so reviewers see open points
-  - --template company.docx to use the company's own styles instead
-
-Usage:
-    python3 md2docx.py <file.md|dir> [more ...] [--out-dir DIR] [--template ref.docx]
-                       [--no-toc] [--mmdc CMD] [--chrome PATH] [--no-npx]
-
-Requires: python-docx, and pandoc either on PATH or bundled via `pip install pypandoc_binary`
-(the easy route on Windows: no admin rights, no winget).
-Mermaid rendering uses, in order: --mmdc, `mmdc` on PATH, `npx -y @mermaid-js/mermaid-cli`.
-It drives a local Chrome or Edge when one is installed, so no browser download is needed.
-Without a renderer the diagram source is kept as a code block, with a note.
-Nothing is sent to online services.
+Install: python -m pip install python-docx. Nothing is sent to online services.
+Shared by both skills: edit skills/spring-delivery-docs/scripts/md2docx.py, then run
+`python tools/sync_shared.py` to update the copy in spring-detailed-design.
 """
 import argparse
-import copy
-import glob
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -38,479 +28,29 @@ import tempfile
 
 try:
     from docx import Document
-    from docx.oxml import OxmlElement
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+    from docx.image.image import Image as DocxImage
+    from docx.oxml import OxmlElement, parse_xml
     from docx.oxml.ns import qn
-    from docx.shared import Cm, Pt, RGBColor
-    from docx.text.run import Run
+    from docx.shared import Cm, Emu, Pt, RGBColor
 except ImportError:
     sys.exit(f'python-docx is required:  "{sys.executable}" -m pip install python-docx'
              "   (add --user on a permissions error)")
 
-BR = "BR"  # private-use marker for <br> in table cells
-MERMAID_RE = re.compile(r"^```mermaid[ \t]*\n(.*?)^```[ \t]*$", re.S | re.M)
-MARKS = [(re.compile(r"【待确认[^】]*】"), RGBColor(0xC0, 0x00, 0x00)),
-         (re.compile(r"【假设[^】]*】"), RGBColor(0xC5, 0x5A, 0x11))]
-BODY_EA, HEAD_EA, LATIN = "宋体", "黑体", "Times New Roman"
-DIAGRAM_ALT = "mermaid-diagram"
-DIAGRAM_SCALE = 0.5  # diagrams are rendered at 2x for sharpness
-
-
-# --------------------------------------------------------------------------- mermaid
-
-def find_pandoc():
-    """pandoc on PATH, else the binary bundled with `pip install pypandoc_binary`."""
-    found = shutil.which("pandoc")
-    if found:
-        return found
-    try:
-        import pypandoc
-        return pypandoc.get_pandoc_path()
-    except (ImportError, OSError):
-        return None
-
-
+LATIN, BODY_EA, HEAD_EA, MONO = "Times New Roman", "\u5b8b\u4f53", "\u9ed1\u4f53", "Consolas"
+MARKS = [(re.compile(r"\u3010\u5f85\u786e\u8ba4[^\u3011]*\u3011"), RGBColor(0xC0, 0x00, 0x00)),
+         (re.compile(r"\u3010\u5047\u8bbe[^\u3011]*\u3011"), RGBColor(0xC5, 0x5A, 0x11))]
+INLINE = re.compile(r"(`[^`]+`|\*\*.+?\*\*|<br\s*/?>|!?\[[^\]]*\]\([^)]*\)|\u3010\u5f85\u786e\u8ba4[^\u3011]*\u3011|\u3010\u5047\u8bbe[^\u3011]*\u3011)")
+MERMAID_START = re.compile(r"^\s*(flowchart|graph|sequenceDiagram|stateDiagram|erDiagram|classDiagram|gantt|"
+                           r"journey|pie|mindmap|timeline)\b")
+MARK_HEX = {str(c).upper() for _, c in MARKS}
 MERMAID_CLI = "@mermaid-js/mermaid-cli@11.4.2"
-
-
-def which(name):
-    """Full path of a command. npm installs mmdc/npx as .cmd files on Windows, which
-    subprocess can only start by full path; Python 3.12.0 may return the extensionless
-    Git Bash script instead, so ask for the .cmd explicitly then."""
-    path = shutil.which(name)
-    if os.name == "nt" and path and not os.path.splitext(path)[1]:
-        path = shutil.which(name + ".cmd") or path
-    return path
-
-
-def mermaid_cmd(args):
-    if args.mmdc:
-        parts = [args.mmdc] if os.path.exists(args.mmdc) else shlex.split(args.mmdc, posix=os.name != "nt")
-        return [which(parts[0]) or parts[0]] + parts[1:]
-    if which("mmdc"):
-        return [which("mmdc")]
-    if not args.no_npx and which("npx"):
-        # npx installs into the user's npm cache, so no admin rights are needed
-        return [which("npx"), "-y", MERMAID_CLI]
-    return None
-
-
-def local_browser():
-    """An installed Chrome/Edge, so mermaid-cli needs no browser download of its own."""
-    if os.name == "nt":
-        cands = []
-        for env in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
-            base = os.environ.get(env)
-            if base:
-                cands += [os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"),
-                          os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe")]
-    elif sys.platform == "darwin":
-        cands = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                 "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-                 "/Applications/Chromium.app/Contents/MacOS/Chromium"]
-    else:
-        cands = [shutil.which(x) for x in ("google-chrome", "google-chrome-stable", "chromium",
-                                           "chromium-browser", "microsoft-edge")]
-    return next((c for c in cands if c and os.path.exists(c)), None)
-
-
-def render_mermaid(md, workdir, args):
-    blocks = list(MERMAID_RE.finditer(md))
-    if not blocks:
-        return md, 0, 0
-    cmd = args.mermaid
-    if not args.noted:  # once per run, and only when there are diagrams
-        args.noted = True
-        if cmd is None:
-            print("note: no Mermaid renderer found (needs Node.js), diagrams are kept as source")
-        elif MERMAID_CLI in cmd:
-            print(f"note: rendering diagrams via npx {MERMAID_CLI}; "
-                  "the first run downloads ~300 MB into the npm cache")
-    # browsers to try, in order: --chrome, else an installed Chrome/Edge, else puppeteer's own
-    local = None if args.chrome else local_browser()
-    browsers = [args.chrome] if args.chrome else ([local, None] if local else [None])
-    env = dict(os.environ)
-    if browsers[0]:
-        env["PUPPETEER_SKIP_DOWNLOAD"] = "1"  # keeps `npx` from fetching a second Chrome
-    pconfs = []
-    for k, b in enumerate(browsers):
-        pconf = os.path.join(workdir, f"puppeteer{k}.json")
-        pp = {"args": ["--no-sandbox"]}
-        if b:
-            pp["executablePath"] = b
-        json.dump(pp, open(pconf, "w"))
-        pconfs.append(pconf)
-    cfg = os.path.join(workdir, "mermaid.json")
-    json.dump({"theme": "default", "themeVariables": {
-        "fontFamily": "PingFang SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"}}, open(cfg, "w"))
-
-    ok = 0
-    out, last = [], 0
-    for i, m in enumerate(blocks):
-        out.append(md[last:m.start()])
-        last = m.end()
-        src = os.path.join(workdir, f"diagram{i}.mmd")
-        png = os.path.join(workdir, f"diagram{i}.png")
-        open(src, "w", encoding="utf-8").write(m.group(1))
-        done, err = False, ""
-        for pconf in list(pconfs) if cmd else []:
-            try:
-                r = subprocess.run(cmd + ["-i", src, "-o", png, "-s", "2", "-b", "white",
-                                          "-p", pconf, "-c", cfg],
-                                   capture_output=True, encoding="utf-8", errors="replace",
-                                   timeout=300, env=env)
-                done = r.returncode == 0 and os.path.exists(png)
-                if not done:
-                    lines = (r.stderr or r.stdout).strip().splitlines() or ["(no output)"]
-                    err = next((x.strip() for x in lines if "Error" in x), lines[-1].strip())
-            except (subprocess.TimeoutExpired, OSError) as e:
-                err = str(e)
-            if done:
-                pconfs[:] = [pconf]  # stick with the browser that works
-                break
-        if cmd and not done:
-            print(f"  ! diagram {i + 1} failed: {err[:300]}")
-            if "Could not find" in err and not args.chrome:
-                print("    no browser found: install Chrome or Edge, or pass --chrome <path to chrome/msedge>")
-        if done:
-            ok += 1
-            out.append(f"![{DIAGRAM_ALT}]({png})\n")
-        else:
-            out.append("> 【图未渲染，以下为 Mermaid 源码，可粘贴到 https://mermaid.live 查看】\n\n"
-                       + m.group(0) + "\n")
-    out.append(md[last:])
-    return "".join(out), len(blocks), ok
-
-
-# --------------------------------------------------------------------------- reference doc
-
-def set_fonts(style, east_asia, latin=LATIN, size=None, bold=None, color=None):
-    style.font.name = latin
-    if size:
-        style.font.size = Pt(size)
-    if bold is not None:
-        style.font.bold = bold
-    if color is not None:
-        style.font.color.rgb = color
-    rpr = style.element.get_or_add_rPr()
-    fonts = rpr.find(qn("w:rFonts"))
-    if fonts is None:
-        fonts = OxmlElement("w:rFonts")
-        rpr.insert(0, fonts)
-    for k in ("w:ascii", "w:hAnsi", "w:cs"):
-        fonts.set(qn(k), latin)
-    fonts.set(qn("w:eastAsia"), east_asia)
-    for k in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
-        fonts.attrib.pop(qn(k), None)
-
-
-def build_reference(path, pandoc):
-    data = subprocess.run([pandoc, "--print-default-data-file", "reference.docx"],
-                          capture_output=True, check=True).stdout
-    open(path, "wb").write(data)
-    d = Document(path)
-    by_name = {s.name: s for s in d.styles}  # d.styles[...] mangles pandoc's "Heading 1" names
-    names = set(by_name)
-    black = RGBColor(0, 0, 0)
-    for n in ("Normal", "Body Text", "First Paragraph", "Compact"):
-        if n in names:
-            set_fonts(by_name[n], BODY_EA, size=10.5)
-    sizes = {1: 18, 2: 15, 3: 13, 4: 12, 5: 11, 6: 10.5}
-    for lvl, sz in sizes.items():
-        n = f"Heading {lvl}"
-        if n in names:
-            set_fonts(by_name[n], HEAD_EA, size=sz, bold=True, color=black)
-            by_name[n].font.italic = False
-            by_name[n].paragraph_format.space_before = Pt(12 if lvl <= 2 else 8)
-            by_name[n].paragraph_format.space_after = Pt(6)
-    for n in ("Title",):
-        if n in names:
-            set_fonts(by_name[n], HEAD_EA, size=22, bold=True, color=black)
-    if "TOC Heading" in names:
-        set_fonts(by_name["TOC Heading"], HEAD_EA, size=15, bold=True, color=black)
-    if "Source Code" in names:
-        set_fonts(by_name["Source Code"], BODY_EA, latin="Consolas", size=9)
-        ppr = by_name["Source Code"].element.get_or_add_pPr()
-        shd = OxmlElement("w:shd")
-        shd.set(qn("w:val"), "clear")
-        shd.set(qn("w:color"), "auto")
-        shd.set(qn("w:fill"), "F5F5F5")
-        ppr.append(shd)
-    if "Verbatim Char" in names:
-        set_fonts(by_name["Verbatim Char"], BODY_EA, latin="Consolas", size=9.5)
-    if "Block Text" in names:
-        set_fonts(by_name["Block Text"], BODY_EA, size=10.5, color=RGBColor(0x40, 0x40, 0x40))
-    d.save(path)
-
-
-# --------------------------------------------------------------------------- post-processing
-
-def shade(cell, fill):
-    tcpr = cell._tc.get_or_add_tcPr()
-    shd = OxmlElement("w:shd")
-    shd.set(qn("w:val"), "clear")
-    shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"), fill)
-    tcpr.append(shd)
-
-
-def style_table(t):
-    tblpr = t._tbl.tblPr
-    for old in tblpr.findall(qn("w:tblBorders")):
-        tblpr.remove(old)
-    borders = OxmlElement("w:tblBorders")
-    for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        b = OxmlElement(f"w:{side}")
-        b.set(qn("w:val"), "single")
-        b.set(qn("w:sz"), "4")
-        b.set(qn("w:space"), "0")
-        b.set(qn("w:color"), "808080")
-        borders.append(b)
-    tblpr.append(borders)
-    for old in tblpr.findall(qn("w:tblW")):
-        tblpr.remove(old)
-    w = OxmlElement("w:tblW")
-    w.set(qn("w:w"), "5000")
-    w.set(qn("w:type"), "pct")
-    tblpr.append(w)
-    for ri, row in enumerate(t.rows):
-        if ri == 0:
-            trpr = row._tr.get_or_add_trPr()
-            h = OxmlElement("w:tblHeader")
-            trpr.append(h)
-        for cell in row.cells:
-            if ri == 0:
-                shade(cell, "D9E2F3")
-            for p in cell.paragraphs:
-                p.paragraph_format.space_before = Pt(1)
-                p.paragraph_format.space_after = Pt(1)
-                for r in p.runs:
-                    r.font.size = Pt(9)
-                    if ri == 0:
-                        r.font.bold = True
-
-
-def text_width(s):
-    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in s)
-
-
-def set_column_widths(t, total_twips):
-    """Size columns by content.
-
-    Each column first gets a minimum that keeps short values (ids, 是/否, status words,
-    paths) on one line; the remaining width goes to the columns with long text.
-    """
-    rows = t.rows
-    ncols = len(t.columns)
-    if ncols < 2:
-        return
-    per_char, pad = 100, 300  # twips per half-width char at 9pt, cell padding
-    mins, wants = [], []
-    for ci in range(ncols):
-        lens, tokens = [], [0]
-        for ri, row in enumerate(rows):
-            if ci >= len(row.cells):
-                continue
-            text = row.cells[ci].text.replace(BR, "\n")
-            lines = text.splitlines() or [""]
-            lens.append(max(text_width(x) for x in lines))
-            tokens += [len(tok) for tok in re.findall(r"[\x21-\x7e]+", text)]
-        lens.sort()
-        longest = lens[-1] if lens else 4
-        typical = lens[int(len(lens) * 0.8)] if lens else 4
-        need = max(min(longest, 10), min(max(tokens), 22))  # short values never wrap
-        mins.append(need * per_char + pad)
-        wants.append(max(min(typical, 80) * per_char + pad, mins[-1]))
-    if sum(mins) >= total_twips:
-        widths = [int(total_twips * m / sum(mins)) for m in mins]
-    elif sum(wants) <= total_twips:
-        extra = total_twips - sum(wants)
-        widths = [int(w + extra * w / sum(wants)) for w in wants]
-    else:
-        spare = total_twips - sum(mins)
-        grow = [w - m for w, m in zip(wants, mins)]
-        widths = [int(m + spare * g / sum(grow)) if sum(grow) else m for m, g in zip(mins, grow)]
-    grid = t._tbl.tblGrid
-    for gc, w in zip(grid.findall(qn("w:gridCol")), widths):
-        gc.set(qn("w:w"), str(w))
-    tblpr = t._tbl.tblPr
-    for old in tblpr.findall(qn("w:tblLayout")):
-        tblpr.remove(old)
-    lay = OxmlElement("w:tblLayout")
-    lay.set(qn("w:type"), "fixed")
-    tblpr.append(lay)
-    for row in rows:
-        for ci, cell in enumerate(row.cells[:ncols]):
-            tcpr = cell._tc.get_or_add_tcPr()
-            for old in tcpr.findall(qn("w:tcW")):
-                tcpr.remove(old)
-            tcw = OxmlElement("w:tcW")
-            tcw.set(qn("w:w"), str(widths[ci]))
-            tcw.set(qn("w:type"), "dxa")
-            tcpr.insert(0, tcw)
-
-
-def iter_paragraphs(doc):
-    yield from doc.paragraphs
-    for t in doc.tables:
-        yield from iter_table_paragraphs(t)
-
-
-def iter_table_paragraphs(t):
-    for row in t.rows:
-        for cell in row.cells:
-            yield from cell.paragraphs
-            for inner in cell.tables:
-                yield from iter_table_paragraphs(inner)
-
-
-def split_run(run, start, end):
-    """Split run so [start:end) of its text is its own run; return that run."""
-    text = run.text
-    parts = [text[:start], text[start:end], text[end:]]
-    run.text = parts[0]
-    mid = copy.deepcopy(run._r)
-    run._r.addnext(mid)
-    tail = copy.deepcopy(run._r)
-    mid.addnext(tail)
-    mid_run, tail_run = Run(mid, run._parent), Run(tail, run._parent)
-    mid_run.text, tail_run.text = parts[1], parts[2]
-    if not parts[0]:
-        run._r.getparent().remove(run._r)
-    if not parts[2]:
-        tail.getparent().remove(tail)
-    return mid_run
-
-
-def fix_runs(p):
-    # <br> markers → line breaks
-    for r in list(p.runs):
-        if BR in r.text:
-            pieces = r.text.split(BR)
-            r.text = pieces[0]
-            anchor = r
-            for piece in pieces[1:]:
-                new = copy.deepcopy(anchor._r)
-                anchor._r.addnext(new)
-                nr = Run(new, anchor._parent)
-                nr.text = piece
-                br = OxmlElement("w:br")
-                new.insert(1 if new.find(qn("w:rPr")) is not None else 0, br)
-                anchor = nr
-    # highlight review markers
-    for rx, color in MARKS:
-        changed = True
-        while changed:
-            changed = False
-            for r in list(p.runs):
-                if r.font.color is not None and r.font.color.rgb == color:
-                    continue
-                m = rx.search(r.text)
-                if m:
-                    mr = split_run(r, m.start(), m.end())
-                    mr.font.color.rgb = color
-                    mr.font.bold = True
-                    changed = True
-                    break
-
-
-def add_field(run, instr):
-    for tag, text in (("begin", None), ("instr", instr), ("separate", None), ("text", "1"), ("end", None)):
-        if tag == "instr":
-            el = OxmlElement("w:instrText")
-            el.set(qn("xml:space"), "preserve")
-            el.text = text
-        elif tag == "text":
-            el = OxmlElement("w:t")
-            el.text = text
-        else:
-            el = OxmlElement("w:fldChar")
-            el.set(qn("w:fldCharType"), tag)
-        run._r.append(el)
-
-
-def page_setup(doc, title, own_template):
-    for s in doc.sections:
-        if not own_template or s.page_width is None:
-            s.page_width, s.page_height = Cm(21), Cm(29.7)
-            s.left_margin = s.right_margin = Cm(2.2)
-            s.top_margin = s.bottom_margin = Cm(2.4)
-        fp = s.footer.paragraphs[0] if s.footer.paragraphs else s.footer.add_paragraph()
-        if not fp.text.strip():
-            fp.alignment = 1
-            fp.add_run("第 ")
-            add_field(fp.add_run(), "PAGE")
-            fp.add_run(" 页 / 共 ")
-            add_field(fp.add_run(), "NUMPAGES")
-            fp.add_run(" 页")
-            for r in fp.runs:
-                r.font.size = Pt(9)
-        hp = s.header.paragraphs[0] if s.header.paragraphs else s.header.add_paragraph()
-        if title and not hp.text.strip():
-            hp.alignment = 2
-            r = hp.add_run(title)
-            r.font.size = Pt(9)
-            r.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
-
-
-def fit_images(doc):
-    sec = doc.sections[0]
-    maxw = sec.page_width - sec.left_margin - sec.right_margin
-    maxh = int((sec.page_height - sec.top_margin - sec.bottom_margin) * 0.8)
-    for shp in doc.inline_shapes:
-        w, h = shp.width, shp.height
-        if shp._inline.docPr.get("descr") == DIAGRAM_ALT:
-            # size from real pixels (rendered at 2x) instead of pandoc's DPI guess
-            rid = shp._inline.graphic.graphicData.pic.blipFill.blip.embed
-            img = doc.part.related_parts[rid].image
-            target = int(img.px_width * DIAGRAM_SCALE * 9525)
-            w, h = target, int(h * target / w) if w else h
-            shp.width, shp.height = w, h
-        scale = min(1.0, maxw / w if w else 1, maxh / h if h else 1)
-        if scale < 1:
-            shp.width, shp.height = int(w * scale), int(h * scale)
-
-
-def enable_field_update(doc):
-    settings = doc.settings.element
-    if settings.find(qn("w:updateFields")) is None:
-        u = OxmlElement("w:updateFields")
-        u.set(qn("w:val"), "true")
-        settings.append(u)
-
-
-# --------------------------------------------------------------------------- main
-
-def convert(md_path, out_path, ref, args, own_template):
-    md = open(md_path, encoding="utf-8").read()
-    title_m = re.search(r"^#\s+(.+)$", md, re.M)
-    title = title_m.group(1).strip() if title_m else os.path.splitext(os.path.basename(md_path))[0]
-    with tempfile.TemporaryDirectory() as wd:
-        md, n_diag, n_ok = render_mermaid(md, wd, args)
-        md = re.sub(r"<br\s*/?>", BR, md)
-        src = os.path.join(wd, "in.md")
-        open(src, "w", encoding="utf-8").write(md)
-        cmd = [args.pandoc, src, "-f", "gfm", "-o", out_path, "--reference-doc", ref,
-               "--resource-path", os.pathsep.join([wd, os.path.dirname(os.path.abspath(md_path))])]
-        if not args.no_toc:
-            cmd += ["--toc", "--toc-depth=3", "-M", "toc-title=目录"]
-        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.strip())
-    doc = Document(out_path)
-    for t in doc.tables:
-        style_table(t)
-    for p in iter_paragraphs(doc):
-        fix_runs(p)
-    page_setup(doc, title, own_template)
-    sec = doc.sections[0]
-    usable = int((sec.page_width - sec.left_margin - sec.right_margin) / 635)  # EMU → twips
-    for t in doc.tables:
-        set_column_widths(t, usable)
-    fit_images(doc)
-    if not args.no_toc:
-        enable_field_update(doc)
-    doc.save(out_path)
-    return n_diag, n_ok
+ALT = "mermaid:"  # alt-text prefix that carries a diagram's source
+NOT_RENDERED = "\u3010\u56fe\u672a\u6e32\u67d3\uff1a\u9700\u8981 Node.js\uff0c\u4ee5\u4e0b\u4e3a Mermaid \u6e90\u7801\u3011"
+ID = re.compile(r"(?<![\w-])(R|AC|Q|D|T)-\d{1,3}(?!\w)")
+WNS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+S = {}  # styles of the document being written
 
 
 def utf8_output():
@@ -520,53 +60,736 @@ def utf8_output():
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+def slash(path):
+    return os.path.abspath(path).replace(os.sep, "/")  # works in Git Bash, PowerShell and Python
+
+
+# --------------------------------------------------------------------------- styles
+
+def set_font(obj, east=BODY_EA, latin=LATIN, size=None, bold=None, color=None):
+    """Font for a style or run, East Asian font included (python-docx only sets Latin)."""
+    obj.font.name = latin
+    if size:
+        obj.font.size = Pt(size)
+    if bold is not None:
+        obj.font.bold = bold
+    if color is not None:
+        obj.font.color.rgb = color
+    rpr = obj.element.get_or_add_rPr()
+    rf = rpr.find(qn("w:rFonts"))
+    if rf is None:
+        rf = OxmlElement("w:rFonts")
+        rpr.insert(0, rf)
+    for k in ("w:ascii", "w:hAnsi", "w:cs"):
+        rf.set(qn(k), latin)
+    rf.set(qn("w:eastAsia"), east)
+    for k in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+        rf.attrib.pop(qn(k), None)
+
+
+def get_style(doc, name, kind=None):
+    for s in doc.styles:
+        if s.name and s.name.lower() == name.lower():
+            return s
+    return doc.styles.add_style(name, kind) if kind is not None else None
+
+
+def shading(ppr_or_tcpr, fill):
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill)
+    ppr_or_tcpr.append(shd)
+
+
+def setup_styles(doc, own_template):
+    S["code"] = get_style(doc, "Code", WD_STYLE_TYPE.PARAGRAPH)
+    set_font(S["code"], BODY_EA, MONO, 9)
+    pf = S["code"].paragraph_format
+    pf.space_before, pf.space_after, pf.line_spacing = Pt(2), Pt(6), 1.0
+    ppr = S["code"].element.get_or_add_pPr()
+    if ppr.find(qn("w:shd")) is None:
+        shading(ppr, "F2F2F2")
+    S["code_char"] = get_style(doc, "Code Char", WD_STYLE_TYPE.CHARACTER)
+    set_font(S["code_char"], BODY_EA, MONO, 9.5)
+    S["toc"] = get_style(doc, "TOC Heading", WD_STYLE_TYPE.PARAGRAPH)
+    S["quote"] = get_style(doc, "Quote") or get_style(doc, "Normal")
+    S["h"] = {n: get_style(doc, f"Heading {n}") for n in range(1, 7)}
+    S["bullet"] = [get_style(doc, n) for n in ("List Bullet", "List Bullet 2", "List Bullet 3")]
+    if own_template:
+        return  # keep the company's fonts and headings
+    set_font(get_style(doc, "Normal"), BODY_EA, LATIN, 10.5)
+    for n, size in zip(range(1, 7), (18, 15, 13, 12, 11, 10.5)):
+        h = S["h"][n]
+        if h is not None:
+            set_font(h, HEAD_EA, LATIN, size, bold=True, color=RGBColor(0, 0, 0))
+            h.font.italic = False
+            h.paragraph_format.space_before = Pt(12 if n <= 2 else 8)
+            h.paragraph_format.space_after = Pt(6)
+    set_font(S["toc"], HEAD_EA, LATIN, 15, bold=True, color=RGBColor(0, 0, 0))
+    set_font(S["quote"], BODY_EA, LATIN, 10.5, color=RGBColor(0x40, 0x40, 0x40))
+    S["quote"].font.italic = False
+
+
+# --------------------------------------------------------------------------- markdown parsing
+
+def cells(line):
+    """Split a table row on | outside `code`, keeping escaped \\|."""
+    s = line.strip()
+    s = s[1:] if s.startswith("|") else s
+    s = s[:-1] if s.endswith("|") and not s.endswith("\\|") else s
+    out, buf, tick, i = [], "", False, 0
+    while i < len(s):
+        if s[i] == "\\" and s[i + 1:i + 2] == "|":
+            buf, i = buf + "\\|", i + 2
+            continue
+        if s[i] == "`":
+            tick = not tick
+        if s[i] == "|" and not tick:
+            out.append(buf.strip())
+            buf = ""
+        else:
+            buf += s[i]
+        i += 1
+    return out + [buf.strip()]
+
+
+def join_lines(lines):
+    out = ""
+    for ln in lines:
+        cjk = out and (ord(out[-1]) > 0x2E80 or ord(ln[0]) > 0x2E80)
+        out += ln if (not out or cjk) else " " + ln
+    return out
+
+
+def blocks(md):
+    lines, out, para, i = md.splitlines(), [], [], 0
+
+    def flush():
+        if para:
+            out.append(("p", join_lines(para)))
+            para.clear()
+
+    while i < len(lines):
+        line, s = lines[i], lines[i].strip()
+        fence = re.match(r"^\s*(```+|~~~+)\s*([\w-]*)", line)
+        if fence:
+            flush()
+            buf, i = [], i + 1
+            while i < len(lines) and not lines[i].strip().startswith(fence.group(1)):
+                buf.append(lines[i])
+                i += 1
+            out.append(("code", fence.group(2).lower(), "\n".join(buf)))
+        elif not s:
+            flush()
+        elif s.startswith("<!--"):
+            flush()
+            while i < len(lines) and "-->" not in lines[i]:
+                i += 1
+        elif re.match(r"^#{1,6}\s", s):
+            flush()
+            m = re.match(r"^(#{1,6})\s+(.*?)\s*#*$", s)
+            out.append(("h", len(m.group(1)), m.group(2)))
+        elif re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", s):
+            flush()
+            out.append(("hr",))
+        elif s.startswith("|") and i + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-{2,}", lines[i + 1]):
+            flush()
+            rows, i = [cells(line)], i + 2
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append(cells(lines[i]))
+                i += 1
+            out.append(("table", rows))
+            continue
+        elif s.startswith(">"):
+            flush()
+            buf = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                buf.append(lines[i].strip()[1:].strip())
+                i += 1
+            out.append(("quote", join_lines([b for b in buf if b])))
+            continue
+        elif re.match(r"^(\s*)([-*+]|\d+[.)])\s+", line):
+            flush()
+            m = re.match(r"^(\s*)([-*+]|\d+[.)])\s+(.*)", line)
+            out.append(("li", len(m.group(1).expandtabs(4)) // 2, m.group(2), m.group(3)))
+        elif re.fullmatch(r"!\[[^\]]*\]\([^)\s]+\)", s):
+            flush()
+            out.append(("img", re.fullmatch(r"!\[([^\]]*)\]\(([^)\s]+)\)", s).group(2)))
+        else:
+            para.append(s)
+        i += 1
+    flush()
+    return out
+
+
+def plain(text):
+    """Markdown cell text as it will appear, for measuring column widths."""
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    return re.sub(r"\*\*|`|\\(?=\|)", "", text)
+
+
+# --------------------------------------------------------------------------- writing
+
+def put(p, text, bold=False, size=None, code=False, color=None):
+    r = p.add_run(re.sub(r"\\([\\`*_{}\[\]()#+\-.!|])", r"\1", text))
+    if code:
+        r.style = S["code_char"]
+    if bold or color is not None:
+        r.bold = True
+    if color is not None:
+        r.font.color.rgb = color
+    if size:
+        r.font.size = Pt(size)
+    return r
+
+
+def add_inline(p, text, bold=False, size=None):
+    pos = 0
+    for m in INLINE.finditer(text):
+        if m.start() > pos:
+            put(p, text[pos:m.start()], bold, size)
+        tok = m.group(0)
+        if tok.startswith("`"):
+            put(p, tok[1:-1], bold, size, code=True)
+        elif tok.startswith("**"):
+            add_inline(p, tok[2:-2], True, size)
+        elif tok.startswith("<br"):
+            p.add_run().add_break()
+        elif tok.startswith(("[", "!")):
+            put(p, re.match(r"!?\[([^\]]*)\]", tok).group(1), bold, size)
+        else:  # a review marker: colored, code spans inside still in code font
+            color = next(c for rx, c in MARKS if rx.fullmatch(tok))
+            for part in re.split(r"(`[^`]+`)", tok):
+                if part:
+                    put(p, part.strip("`") if part.startswith("`") else part, bold, size,
+                        code=part.startswith("`"), color=color)
+        pos = m.end()
+    if pos < len(text):
+        put(p, text[pos:], bold, size)
+
+
+def add_field(run, instr, placeholder="1"):
+    for kind, text in (("begin", None), ("instr", instr), ("separate", None), ("t", placeholder), ("end", None)):
+        if kind == "instr":
+            el = OxmlElement("w:instrText")
+            el.set(qn("xml:space"), "preserve")
+            el.text = text
+        elif kind == "t":
+            el = OxmlElement("w:t")
+            el.text = text
+        else:
+            el = OxmlElement("w:fldChar")
+            el.set(qn("w:fldCharType"), kind)
+        run._r.append(el)
+
+
+def text_width(s):
+    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in s)
+
+
+def column_widths(rows, total):
+    """Short values (ids, yes/no, statuses, paths) stay on one line; long text gets the rest."""
+    ncols = max(len(r) for r in rows)
+    mins, wants = [], []
+    for ci in range(ncols):
+        lens, tokens = [], [0]
+        for row in rows:
+            text = plain(row[ci]) if ci < len(row) else ""
+            lens.append(max(text_width(x) for x in (text.splitlines() or [""])))
+            tokens += [len(t) for t in re.findall(r"[\x21-\x7e]+", text)]
+        lens.sort()
+        need = max(min(lens[-1], 10), min(max(tokens), 22))
+        mins.append(need * 100 + 300)  # twips: ~100 per half-width char at 9pt, plus padding
+        wants.append(max(min(lens[int(len(lens) * 0.8)], 80) * 100 + 300, mins[-1]))
+    if sum(mins) >= total:
+        return [int(total * m / sum(mins)) for m in mins]
+    if sum(wants) <= total:
+        return [int(w + (total - sum(wants)) * w / sum(wants)) for w in wants]
+    grow = [w - m for w, m in zip(wants, mins)]
+    return [int(m + (total - sum(mins)) * g / sum(grow)) for m, g in zip(mins, grow)]
+
+
+def add_table(doc, rows, total_twips):
+    ncols = max(len(r) for r in rows)
+    t = doc.add_table(rows=len(rows), cols=ncols)
+    tblpr = t._tbl.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        b = OxmlElement(f"w:{side}")
+        for k, v in (("w:val", "single"), ("w:sz", "4"), ("w:space", "0"), ("w:color", "808080")):
+            b.set(qn(k), v)
+        borders.append(b)
+    tblpr.append(borders)
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    tblpr.append(layout)
+    widths = column_widths(rows, total_twips)
+    for gc, w in zip(t._tbl.tblGrid.findall(qn("w:gridCol")), widths):
+        gc.set(qn("w:w"), str(w))
+    t.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))  # repeat on every page
+    for ri, (row, row_obj) in enumerate(zip(rows, t.rows)):
+        for ci, cell in enumerate(row_obj.cells):
+            cell.width = Emu(widths[ci] * 635)
+            if ri == 0:
+                shading(cell._tc.get_or_add_tcPr(), "D9E2F3")
+            p = cell.paragraphs[0]
+            p.paragraph_format.space_before = p.paragraph_format.space_after = Pt(1)
+            add_inline(p, row[ci] if ci < len(row) else "", bold=ri == 0, size=9)
+
+
+def add_picture(doc, path, alt, max_w, max_h, scale=1.0):
+    img = DocxImage.from_file(path)
+    w, h = img.px_width * scale * 9525, img.px_height * scale * 9525  # EMU at 96 dpi
+    k = min(1.0, max_w / w, max_h / h)
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    shape = p.add_run().add_picture(path, width=Emu(int(w * k)), height=Emu(int(h * k)))
+    if alt:
+        shape._inline.docPr.set("descr", alt)
+
+
+class Mermaid:
+    """Renders with mermaid-cli: an installed mmdc, else npx (installs into the user's npm
+    cache, no admin rights), driving an installed Chrome/Edge so no browser is downloaded."""
+
+    def __init__(self, args, workdir):
+        self.dir, self.n, self.ok, self.noted, self.chrome = workdir, 0, 0, False, args.chrome
+        self.cmd = self.find_cmd(args)
+        local = None if args.chrome else self.local_browser()
+        browsers = [args.chrome] if args.chrome else ([local, None] if local else [None])
+        self.env = dict(os.environ, PUPPETEER_SKIP_DOWNLOAD="1") if browsers[0] else dict(os.environ)
+        self.confs = []
+        for k, b in enumerate(browsers):
+            conf = os.path.join(workdir, f"puppeteer{k}.json")
+            json.dump({"args": ["--no-sandbox"], **({"executablePath": b} if b else {})}, open(conf, "w"))
+            self.confs.append(conf)
+        self.cfg = os.path.join(workdir, "mermaid.json")
+        json.dump({"theme": "default", "themeVariables": {
+            "fontFamily": "PingFang SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"}}, open(self.cfg, "w"))
+
+    @staticmethod
+    def which(name):
+        path = shutil.which(name)  # npm installs .cmd files on Windows; Python 3.12.0 may skip the .cmd
+        if os.name == "nt" and path and not os.path.splitext(path)[1]:
+            path = shutil.which(name + ".cmd") or path
+        return path
+
+    def find_cmd(self, args):
+        if args.mmdc:
+            return [self.which(args.mmdc) or args.mmdc]
+        if self.which("mmdc"):
+            return [self.which("mmdc")]
+        if self.which("npx"):
+            return [self.which("npx"), "-y", MERMAID_CLI]
+        return None
+
+    @staticmethod
+    def local_browser():
+        if os.name == "nt":
+            cands = [os.path.join(os.environ.get(env, ""), *rest)
+                     for env in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA") if os.environ.get(env)
+                     for rest in (("Google", "Chrome", "Application", "chrome.exe"),
+                                  ("Microsoft", "Edge", "Application", "msedge.exe"))]
+        elif sys.platform == "darwin":
+            cands = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"]
+        else:
+            cands = [shutil.which(x) for x in ("google-chrome", "google-chrome-stable", "chromium",
+                                               "chromium-browser", "microsoft-edge")]
+        return next((c for c in cands if c and os.path.exists(c)), None)
+
+    def render(self, src):
+        self.n += 1
+        if not self.noted:
+            self.noted = True
+            if self.cmd is None:
+                print("note: no Mermaid renderer (needs Node.js), diagrams are kept as source")
+            elif MERMAID_CLI in self.cmd:
+                print(f"note: rendering diagrams via npx {MERMAID_CLI}; the first run downloads ~300 MB")
+        if self.cmd is None:
+            return None
+        mmd = os.path.join(self.dir, f"d{self.n}.mmd")
+        png = mmd[:-4] + ".png"
+        open(mmd, "w", encoding="utf-8").write(src)
+        err = ""
+        for conf in list(self.confs):
+            try:
+                r = subprocess.run(self.cmd + ["-i", mmd, "-o", png, "-s", "2", "-b", "white", "-p", conf,
+                                               "-c", self.cfg], capture_output=True, encoding="utf-8",
+                                   errors="replace", timeout=300, env=self.env)
+                if r.returncode == 0 and os.path.exists(png):
+                    self.confs[:] = [conf]  # stick with the browser that works
+                    self.ok += 1
+                    return png
+                lines = (r.stderr or r.stdout).strip().splitlines() or ["(no output)"]
+                err = next((x.strip() for x in lines if "Error" in x), lines[-1].strip())
+            except (subprocess.TimeoutExpired, OSError) as e:
+                err = str(e)
+        print(f"  ! diagram {self.n} not rendered: {err[:300]}")
+        if "Could not find" in err and not self.chrome:
+            print("    no browser found: install Chrome or Edge, or pass --chrome <path to chrome/msedge>")
+        return None
+
+
+def write_docx(md_path, out_path, args):
+    md = open(md_path, encoding="utf-8").read()
+    title = next((m.group(1).strip() for m in re.finditer(r"^#\s+(.+)$", md, re.M)),
+                 os.path.splitext(os.path.basename(md_path))[0])
+    doc = Document(args.template) if args.template else Document()
+    if args.template:  # keep the template's styles, header/footer and page setup; drop its body
+        for el in list(doc.element.body):
+            if el.tag != qn("w:sectPr"):
+                doc.element.body.remove(el)
+    setup_styles(doc, bool(args.template))
+    for s in doc.sections:
+        if not args.template:
+            s.page_width, s.page_height = Cm(21), Cm(29.7)
+            s.left_margin = s.right_margin = Cm(2.2)
+            s.top_margin = s.bottom_margin = Cm(2.4)
+        fp = s.footer.paragraphs[0]
+        if not fp.text.strip():
+            fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for part in ("\u7b2c ", "PAGE", " \u9875 / \u5171 ", "NUMPAGES", " \u9875"):
+                r = fp.add_run() if part.isupper() else fp.add_run(part)
+                if part.isupper():
+                    add_field(r, part)
+                r.font.size = Pt(9)
+        hp = s.header.paragraphs[0]
+        if not hp.text.strip():
+            hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            r = hp.add_run(title)
+            r.font.size = Pt(9)
+            r.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+    sec = doc.sections[0]
+    max_w = sec.page_width - sec.left_margin - sec.right_margin
+    max_h = int((sec.page_height - sec.top_margin - sec.bottom_margin) * 0.8)
+    base = os.path.dirname(os.path.abspath(md_path))
+    toc_done = args.no_toc
+    with tempfile.TemporaryDirectory() as wd:
+        mer = Mermaid(args, wd)
+        prev = None
+        for b in blocks(md):
+            kind = b[0]
+            if prev == "table" and kind != "table":  # Word puts no gap under a table
+                doc.add_paragraph().paragraph_format.space_after = Pt(0)
+            prev = kind
+            if kind == "h":
+                p = doc.add_paragraph(style=S["h"].get(b[1]))
+                add_inline(p, b[2])
+                if b[1] == 1 and not toc_done:  # table of contents right after the title
+                    toc_done = True
+                    doc.add_paragraph("\u76ee\u5f55", style=S["toc"])
+                    add_field(doc.add_paragraph().add_run(), 'TOC \\o "1-3" \\h \\z \\u',
+                              "\uff08\u6253\u5f00\u6587\u6863\u65f6\u9009\u62e9\u201c\u662f\u201d\u66f4\u65b0\u57df\uff0c\u5373\u53ef\u751f\u6210\u76ee\u5f55\uff09")
+            elif kind == "p":
+                add_inline(doc.add_paragraph(), b[1])
+            elif kind == "quote":
+                add_inline(doc.add_paragraph(style=S["quote"]), b[1])
+            elif kind == "li":
+                _, level, marker, text = b
+                if marker[0].isdigit():  # literal numbers: Word's list numbering would run on across lists
+                    p = doc.add_paragraph()
+                    p.paragraph_format.left_indent = Cm(0.75 * (level + 1))
+                    p.paragraph_format.first_line_indent = Cm(-0.6)
+                    add_inline(p, f"{marker} {text}")
+                else:
+                    add_inline(doc.add_paragraph(style=S["bullet"][min(level, 2)]), text)
+            elif kind == "hr":
+                doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+            elif kind == "table":
+                add_table(doc, b[1], int(max_w / 635))
+            elif kind == "img":
+                path = b[1] if os.path.isabs(b[1]) else os.path.join(base, b[1])
+                if os.path.exists(path):
+                    add_picture(doc, path, None, max_w, max_h)
+            elif kind == "code":
+                lang, src = b[1], b[2]
+                png = mer.render(src) if lang == "mermaid" or (not lang and MERMAID_START.match(src)) else None
+                if png:
+                    alt = ALT + src.replace("\\", "\\\\").replace("\n", "\\n")
+                    add_picture(doc, png, alt, max_w, max_h, scale=0.5)  # rendered at 2x
+                    continue
+                if lang == "mermaid":
+                    doc.add_paragraph(NOT_RENDERED, style=S["quote"])
+                p = doc.add_paragraph(style=S["code"])
+                lines = src.replace("\t", "    ").split("\n")
+                for k, line in enumerate(lines):
+                    r = p.add_run(line)
+                    if k < len(lines) - 1:
+                        r.add_break()
+    settings = doc.settings.element
+    if not args.no_toc and settings.find(qn("w:updateFields")) is None:
+        u = OxmlElement("w:updateFields")
+        u.set(qn("w:val"), "true")
+        settings.append(u)
+    doc.save(out_path)
+    return mer.n, mer.ok, md
+
+
+def trace_check(md):
+    """Design docs: every R has an AC and appears in the technical part; ids are defined;
+    no \u3010\u5047\u8bbe\u3011 left for an answered question. Prints findings, never fails the conversion."""
+    defined = {}
+    for line in md.splitlines():
+        if line.lstrip().startswith("|"):
+            first = cells(line)[0].strip("* ")
+            if ID.fullmatch(first):
+                defined[first] = cells(line)
+    if not any(k.startswith("R-") for k in defined):
+        return
+    refs = {m.group(0) for m in ID.finditer(md)}
+    issues = [f"{i} is referenced but never defined" for i in sorted(refs - set(defined))]
+    covered = {m.group(0) for k, row in defined.items() if k.startswith("AC-") for m in ID.finditer(" ".join(row[1:2]))}
+    head = re.search(r"^#+ .*\u6280\u672f\u8bbe\u8ba1", md, re.M)
+    tech = md[head.start():] if head else ""
+    for r in (k for k in defined if k.startswith("R-")):
+        if r not in covered:
+            issues.append(f"{r} has no acceptance criterion (AC row with {r} in its 2nd column)")
+        if tech and not re.search(rf"(?<![\w-]){r}(?!\d)", tech):
+            issues.append(f"{r} is not referenced in the technical part")
+    answered = {k for k, row in defined.items() if k.startswith("Q-") and re.search("\u5df2\u786e\u8ba4|\u5df2\u53d6\u6d88", row[-1])}
+    for a in re.findall(r"\u3010\u5047\u8bbe[^\u3011]*\u3011", md):
+        issues += [f"assumption left for answered {q}: {a}" for q in answered if re.search(rf"{q}(?!\d)", a)]
+    open_q = [k for k, row in defined.items() if k.startswith("Q-") and k not in answered]
+    blocking = [k for k in open_q if "\u963b\u585e" in " ".join(defined[k]).replace("\u975e\u963b\u585e", "")]
+    count = lambda p: sum(k.startswith(p) for k in defined)
+    assumptions = len(re.findall("\u3010\u5047\u8bbe", md))
+    print(f"[check] R={count('R-')} AC={count('AC-')} Q={count('Q-')} (open {len(open_q)}, blocking "
+          f"{len(blocking)}: {', '.join(blocking) or '-'}) \u3010\u5047\u8bbe\u3011={assumptions}" + ("" if issues else " -- ok"))
+    for x in issues:
+        print(f"  ! {x}")
+
+
+# --------------------------------------------------------------------------- reading
+
+def read_docx(path, out_dir):
+    doc = Document(path)
+    id2name = {s.style_id: (s.name or "").lower() for s in doc.styles}
+    outline_of = {}
+    for s in doc.styles:
+        lvl = s.element.find(f"{WNS}pPr/{WNS}outlineLvl")
+        if lvl is not None:
+            outline_of[s.style_id] = int(lvl.get(qn("w:val")))
+    code_char = next((s.style_id for s in doc.styles if (s.name or "").lower() == "code char"), None)
+    comments = {}
+    for rel in doc.part.rels.values():
+        if rel.reltype.endswith("/comments") and not rel.is_external:
+            for c in parse_xml(rel.target_part.blob).iter(f"{WNS}comment"):
+                comments[c.get(qn("w:id"))] = (c.get(qn("w:author")) or "",
+                                               "".join(t.text or "" for t in c.iter(f"{WNS}t")))
+    media = os.path.join(out_dir, "media")
+    images = []
+
+    def save_image(rid):
+        part = doc.part.related_parts.get(rid)
+        if part is None:
+            return None
+        os.makedirs(media, exist_ok=True)
+        name = f"image{len(images) + 1}{os.path.splitext(part.partname)[1]}"
+        open(os.path.join(media, name), "wb").write(part.blob)
+        images.append(os.path.join(media, name))
+        return f"media/{name}"
+
+    def inline(p, in_table=False, code=False):
+        """Paragraph -> (markdown text, mermaid source or None, page break?)."""
+        segs, mermaid, page = [], None, False
+        for el in p.iter():
+            tag = el.tag
+            if tag in (f"{WNS}t", f"{WNS}delText"):
+                r = el.getparent()
+                rpr = r.find(f"{WNS}rPr")
+                b = rpr.find(f"{WNS}b") if rpr is not None else None
+                rs = rpr.find(f"{WNS}rStyle") if rpr is not None else None
+                color = rpr.find(f"{WNS}color") if rpr is not None else None
+                if color is not None and color.get(qn("w:val"), "").upper() in MARK_HEX:
+                    b = None  # bold that comes with a marker's color is not **emphasis**
+                ins = any(True for _ in el.iterancestors(f"{WNS}ins", f"{WNS}moveTo"))
+                segs.append([el.text or "", b is not None and b.get(qn("w:val")) not in ("0", "false"),
+                             rs is not None and rs.get(qn("w:val")) == code_char,
+                             "+" if ins else "-" if tag.endswith("delText") else ""])
+            elif tag == f"{WNS}tab":
+                segs.append([" ", False, False, ""])
+            elif tag == f"{WNS}br":
+                if el.get(qn("w:type")) == "page":
+                    page = True
+                else:
+                    segs.append(["\n" if code else "<br>", False, False, ""])
+            elif tag == f"{WNS}commentRangeStart" and el.get(qn("w:id")) in comments:
+                author, text = comments[el.get(qn("w:id"))]
+                segs.append([f"[\u6279\u6ce8 {author}\uff1a{text}]", False, False, ""])
+            elif tag.endswith("}docPr"):
+                descr = el.get("descr") or ""
+                if descr.startswith(ALT):
+                    mermaid = re.sub(r"\\(\\|n)", lambda m: "\n" if m.group(1) == "n" else "\\", descr[len(ALT):])
+            elif (tag.endswith("}blip") or tag.endswith("}imagedata")) and mermaid is None:  # DrawingML / old VML
+                ref = save_image(el.get(qn("r:embed")) or el.get(qn("r:id")))
+                if ref:
+                    segs.append([f"![]({ref})", False, False, ""])
+        merged = []
+        for s in segs:  # merge neighbours with the same formatting before adding markup
+            if merged and merged[-1][1:] == s[1:] and s[0] not in ("<br>", "\n"):
+                merged[-1][0] += s[0]
+            else:
+                merged.append(list(s))
+        out = ""
+        for text, bold, is_code, change in merged:
+            if in_table:
+                text = text.replace("|", "\\|")
+            if is_code and text.strip():
+                text = f"`{text}`"
+            elif bold and text.strip():
+                text = f"**{text}**"
+            out += f"[{change}{text}{change}]" if change else text
+        return out, mermaid, page
+
+    out, code_buf = [], []
+
+    def flush_code():
+        if code_buf:
+            src = "\n".join(code_buf)
+            lang = ("mermaid" if MERMAID_START.match(src) else
+                    "json" if re.match(r"\s*[{\[]", src) else
+                    "sql" if re.search(r"^\s*(CREATE|ALTER|SELECT|INSERT|UPDATE|DELETE)\s", src, re.M) else
+                    "bash" if re.search(r"^\s*(mvn|java|docker|curl|nohup|cd|git|npm|npx|python3?|pip3?|kill|"
+                                        r"systemctl|sudo|export|tail)\s", src, re.M) else "")
+            out.append(f"```{lang}\n{src}\n```")
+            code_buf.clear()
+
+    def paragraph(p):
+        sid = p.find(f"{WNS}pPr/{WNS}pStyle")
+        sid = sid.get(qn("w:val")) if sid is not None else None
+        name = id2name.get(sid, "normal")
+        if name.startswith("toc") or p.find(f".//{WNS}instrText") is not None and "TOC" in "".join(
+                t.text or "" for t in p.iter(f"{WNS}instrText")):
+            return
+        text, mermaid, page = inline(p, code=name == "code")
+        if name == "code":
+            code_buf.append(text)
+            return
+        flush_code()
+        if mermaid is not None:
+            out.append(f"```mermaid\n{mermaid}\n```")
+        elif page and not text.strip():
+            out.append("---")
+        elif text.strip() == NOT_RENDERED:
+            return
+        elif text.strip():
+            lvl = p.find(f"{WNS}pPr/{WNS}outlineLvl")
+            lvl = int(lvl.get(qn("w:val"))) if lvl is not None else outline_of.get(sid)
+            m = re.match(r"(heading|\u6807\u9898)\s*(\d)", name)
+            if m or (lvl is not None and lvl < 6):
+                out.append("#" * (int(m.group(2)) if m else lvl + 1) + " " + text.replace("**", "").strip())
+            elif name.startswith("list bullet") or p.find(f"{WNS}pPr/{WNS}numPr") is not None:
+                depth = int(name[-1]) - 1 if name[-1:].isdigit() else 0
+                out.append("  " * depth + "- " + text.strip())
+            elif name in ("quote", "intense quote"):
+                out.append("> " + text.strip())
+            else:
+                out.append(text.strip())
+
+    def table(tbl):
+        flush_code()
+        rows = []
+        for tr in tbl.findall(f"{WNS}tr"):
+            row = []
+            for tc in tr.findall(f"{WNS}tc"):
+                parts = [inline(p, in_table=True)[0].strip() for p in tc.iter(f"{WNS}p")]
+                row.append("<br>".join(x for x in parts if x))
+            rows.append(row)
+        if rows:
+            n = max(len(r) for r in rows)
+            rows = [r + [""] * (n - len(r)) for r in rows]
+            rows[0] = [re.sub(r"^\*\*(.*)\*\*$", r"\1", c) for c in rows[0]]
+            out.append("\n".join(["| " + " | ".join(rows[0]) + " |", "|" + "---|" * n]
+                                 + ["| " + " | ".join(r) + " |" for r in rows[1:]]))
+
+    def walk(container):
+        for el in container.iterchildren():
+            if el.tag == f"{WNS}p":
+                paragraph(el)
+            elif el.tag == f"{WNS}tbl":
+                table(el)
+            elif el.tag == f"{WNS}sdt":  # content control; Word puts its own TOC in one
+                content = el.find(f"{WNS}sdtContent")
+                gallery = el.find(f".//{WNS}docPartGallery")
+                if content is not None and not (gallery is not None and "Contents" in (gallery.get(qn("w:val")) or "")):
+                    walk(content)
+        flush_code()
+
+    walk(doc.element.body)
+    os.makedirs(out_dir, exist_ok=True)
+    md_path = os.path.join(out_dir, os.path.splitext(os.path.basename(path))[0] + ".md")
+    open(md_path, "w", encoding="utf-8").write("\n\n".join(out) + "\n")
+    return md_path, images
+
+
+def report(md_path, images):
+    lines = open(md_path, encoding="utf-8").read().splitlines()
+    heads = [(i, ln) for i, ln in enumerate(lines, 1) if re.match(r"^#{1,6}\s", ln)]
+    joined = "\n".join(lines)
+    marks = {k: len(re.findall(p, joined)) for k, p in (("added", r"\[\+"), ("deleted", r"\[-"), ("comments", r"\[\u6279\u6ce8 "))}
+    print(f"markdown: {slash(md_path)}  ({len(lines)} lines, {len(joined)} chars, {len(heads)} headings, "
+          f"{len(images)} images, {joined.count('```mermaid')} diagrams)")
+    if any(marks.values()):
+        print(f"review marks: {marks['added']} [+added+], {marks['deleted']} [-deleted-], {marks['comments']} [\u6279\u6ce8 \u2026]")
+    for i, ln in heads[:60]:
+        print(f"  L{i}: {ln[:90]}")
+    if len(heads) > 60:
+        print(f"  \u2026 {len(heads) - 60} more headings")
+    for f in images[:20]:
+        print(f"  image: {slash(f)}" + ("  [EMF/WMF: cannot be viewed, ask for a screenshot]"
+                                        if f.lower().endswith((".emf", ".wmf")) else ""))
+    if len(joined) > 60000:
+        print("note: long document, read it in parts (offset/limit) using the line numbers above")
+
+
+# --------------------------------------------------------------------------- main
+
 def main():
     utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("inputs", nargs="+", help="Markdown files or directories")
-    ap.add_argument("--out-dir", help="default: next to each .md")
-    ap.add_argument("--template", help="company .docx whose styles to use (pandoc reference doc)")
+    ap.add_argument("inputs", nargs="+", help=".md files or folders to convert, or .docx files with --read")
+    ap.add_argument("--read", action="store_true", help="convert .docx to Markdown instead")
+    ap.add_argument("--out-dir", help="default: next to each .md (writing), system temp dir (--read)")
+    ap.add_argument("--template", help="company .docx whose styles, header and footer to use")
     ap.add_argument("--no-toc", action="store_true")
-    ap.add_argument("--mmdc", help="Mermaid CLI command, e.g. 'mmdc' or '/path/to/mmdc'")
-    ap.add_argument("--chrome", help="Chrome/Chromium executable for the Mermaid CLI")
-    ap.add_argument("--no-npx", action="store_true", help="do not fall back to npx to fetch mermaid-cli")
+    ap.add_argument("--mmdc", help="Mermaid CLI command or path")
+    ap.add_argument("--chrome", help="Chrome/Edge executable for the Mermaid CLI")
     args = ap.parse_args()
-    args.pandoc = find_pandoc()
-    args.mermaid = mermaid_cmd(args)
-    args.noted = False
-    if not args.pandoc:
-        sys.exit("pandoc not found. Install one of:\n"
-                 f'  "{sys.executable}" -m pip install pypandoc_binary   (any OS, no admin rights; bundles pandoc)\n'
-                 "  brew install pandoc                                  (macOS)\n"
-                 "  https://github.com/jgm/pandoc/releases               (Windows .msi installer)")
-
-    files = []
+    files, failed = [], False
     for i in args.inputs:
         if os.path.isdir(i):
-            files += sorted(glob.glob(os.path.join(i, "**", "*.md"), recursive=True))
-        else:
+            files += sorted(os.path.join(i, f) for f in os.listdir(i) if f.endswith(".md"))
+        elif os.path.isfile(i):
             files.append(i)
-    if not files:
-        sys.exit("no .md files found")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        ref = args.template
-        if not ref:
-            ref = os.path.join(tmp, "reference.docx")
-            build_reference(ref, args.pandoc)
-        failed = 0
+        else:
+            print(f"not found: {i}")
+            failed = True
+    try:
         for f in files:
+            stem, ext = os.path.splitext(os.path.basename(f))
+            if args.read:
+                if ext.lower() != ".docx":
+                    print(f"skip {f}: --read takes .docx (.pdf \u2192 read it directly, .doc/.wps \u2192 save as .docx)")
+                    failed = True
+                    continue
+                out_dir = args.out_dir or os.path.join(tempfile.gettempdir(), "md2docx-" + re.sub(r"[^\w.-]", "_", stem))
+                report(*read_docx(f, out_dir))
+                continue
             out_dir = args.out_dir or os.path.dirname(os.path.abspath(f))
             os.makedirs(out_dir, exist_ok=True)
-            out = os.path.join(out_dir, os.path.splitext(os.path.basename(f))[0] + ".docx")
+            out = os.path.join(out_dir, stem + ".docx")
             try:
-                n, ok = convert(f, out, ref, args, bool(args.template))
-            except Exception as e:  # keep going with the other files
-                print(f"FAIL {f}: {e}")
-                failed += 1
+                n, ok, md = write_docx(f, out, args)
+            except PermissionError as e:
+                print(f"FAIL {f}: cannot write {e.filename}: close it in Word first")
+                failed = True
                 continue
-            diag = f", diagrams {ok}/{n}" if n else ""
-            print(f"wrote {out}{diag}")
+            trace_check(md)
+            print(f"wrote {slash(out)}" + (f", diagrams {ok}/{n}" if n else ""))
+    except BrokenPipeError:  # output piped into `head`; files are already written
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     sys.exit(1 if failed else 0)
 
 
