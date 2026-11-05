@@ -25,7 +25,7 @@ The deliverable is a **Word .docx**, because review meetings run on Word. You dr
 
 - This skill is two files: this SKILL.md and `md2docx.py` next to it. The script needs python-docx (`python -m pip install python-docx`). Diagrams need Node.js and are optional: without it, their source is kept in the document.
 - On Windows, `python3` is often missing or opens the Microsoft Store, so use `python` (or `py -3`). Put working files in the system temp dir by absolute path (on Windows, `/tmp` means different places to Git Bash and to native programs).
-- **Keep outputs bounded.** On a large project, one huge tool output (a whole directory listing, an unbounded `grep -r`, a full `git log`) can exhaust Claude Code's memory and crash the session. Use `-l`, `| head`, and targeted reads.
+- **Keep outputs bounded.** On a large project, one huge tool output (a whole directory listing, an unbounded `grep -r`, a full `git log`, a big file read in one go) can exhaust Claude Code's memory and crash the session. Step 3 has the rules.
 
 ## Workflow
 
@@ -33,7 +33,6 @@ The deliverable is a **Word .docx**, because review meetings run on Word. You dr
 
 - **Requirement doc**: `.docx` → `python <skill_dir>/md2docx.py --read <requirement.docx>`. It writes Markdown to the system temp dir and prints the path and an outline (headings with line numbers). Read the .md, in parts if it is long. Then view the extracted images: prototypes and flowcharts carry half the requirements. EMF/WMF drawings cannot be viewed, so ask for screenshots if they matter. `.pdf` → Read it directly. `.doc`/`.wps` → ask the user to save it as .docx. Screenshots and pasted text → use them as they are.
 - **A design .docx that came back from review**: go to "Updating after review" below.
-- **Existing code** (when run inside a Spring project): learn its conventions by reading a few representative files with bounded commands, for example `git ls-files "*Controller.java" | head -40`, `grep -rl --include=*.java "class .*Result\b" . | head`, `git ls-files "*.sql" | head`. Read 2–3 controllers near the feature, the response wrapper (`Result`/`R`/`AjaxResult`), a base entity and 1–2 entities, the error-code enum or `@RestControllerAdvice`, the DDL or migrations, and `application*.yml`. Never copy passwords, keys or real hosts into the doc. Note the response wrapper, path style (`/api/v1/...`), table prefix, primary key strategy, audit fields and logic delete, how the current user is identified, error-code ranges already used, and which existing tables and APIs the feature touches.
 
 ### 2. Decompose into requirement items
 
@@ -41,16 +40,54 @@ Split the requirement doc into `R-01, R-02, …`. Each item describes one user-o
 
 Items the doc implies but never states (e.g. "the coupon must be returned when an order is cancelled") are still items. Mark their source as `推导` and raise a Q to confirm them.
 
-### 3. Run the granularity checklist
+### 3. Check the existing code
 
-Walk every R item through the checklist at the end of this file. This is where most of the value is. Each unanswered point that matters becomes a `Q-xx`. Classify each question:
+A design that does not match the code gets torn up at the first code review, so confirm, don't assume. Skip this step only for a brand-new project with no code, and say so in 2.1.
+
+Do it **without reading the whole project**. A large repository has tens of thousands of files, and big outputs pulled into the session exhaust Claude Code's memory. Rules:
+
+- Search with `git grep`. It only looks at tracked files (so `target/`, `node_modules` and build output are skipped) and stays fast on large repos. Outside git: `grep -rIl --include=*.java --exclude-dir={target,build,node_modules,.git} …`.
+- Every command has a ceiling: ask for file names (`-l`) or counts (`-c`) before lines, and end with `| head -50` or less (PowerShell: `| Select-Object -First 50`).
+- Check a file's size (`wc -l`) before reading it. Read big files only around the line numbers `git grep -n` found (Read with offset/limit). Never read generated code, minified files, lock files, logs or SQL data dumps.
+- Write findings to `<system temp dir>/spring-detailed-design/{功能名}-代码调研.md` as you go (file path + one-line finding), and work from these notes afterwards instead of re-reading code.
+
+What to find, in this order:
+
+1. **Project shape**, in a few commands:
+   ```bash
+   git ls-files "*pom.xml" "*build.gradle*" | head -30        # modules
+   git ls-files "*Controller.java" | wc -l                      # scale
+   git grep -l -E "mybatis-plus|mybatis|spring-boot-starter-data-jpa" -- "*pom.xml" "*.gradle" | head
+   ```
+2. **Conventions**, reading one file each:
+   ```bash
+   git grep -l -E "class (Result|R|AjaxResult|CommonResult|ApiResponse)[<{ ]" -- "*.java" | head    # response wrapper
+   git grep -l -E "@(Rest)?ControllerAdvice" -- "*.java" | head                                      # errors, error codes
+   git grep -l -E "class (Base[A-Za-z]*(Entity|DO|PO|Model)|[A-Za-z]*BaseEntity)[ <{]" -- "*.java" | head
+   git grep -n -E "SecurityContextHolder|getLoginUser|UserContext|X-User-Id" -- "*.java" | head -10  # who is the current user
+   ```
+   From those plus 2–3 entities with their DDL, note: path style, table prefix, primary-key strategy, audit fields, logic delete, enum style, how the current user is identified, and which error-code ranges are taken.
+3. **What the feature touches.** For each R item, take its domain terms in Chinese and English (优惠券/coupon, 订单/order, 取消/cancel …) and search code, DDL and mapper XML:
+   ```bash
+   git grep -l -i -E "coupon|优惠券" -- "*.java" "*.xml" "*.sql" | head -50
+   git grep -n -E '@(Get|Post|Put|Delete|Request)Mapping.*order' -- "*.java" | head -40
+   git grep -n -i -E "create table[^(]*order" -- "*.sql" | head
+   ```
+   Then read only what the design depends on: the entity and DDL of every table you will change (real column names and types), the controller method and service of every API you will change, and **one similar existing feature end to end** (controller → service → mapper/XML), so the new code follows its layering and naming.
+4. **Does it already exist?** If part of the feature is already there (a coupon table, a half-built module, an unused endpoint), design a modification, not a duplicate, and say so in 1.1 and 2.1. If something the requirement depends on is missing (e.g. no order-cancel flow), raise it as a Q.
+
+Put the evidence in the design. 2.1 lists the conventions followed and the files they came from, and every 修改 table or API matches the code you read. Anything you could not confirm in the code is 【待确认】, never a guess.
+
+### 4. Run the granularity checklist
+
+Walk every R item through the checklist at the end of this file, together with what step 3 found in the code. This is where most of the value is. Each unanswered point that matters becomes a `Q-xx`. Classify each question:
 
 - **阻塞**: development cannot start, or the answer changes table structure or the API contract
 - **非阻塞**: the default can be used and changed later cheaply
 
 Keep questions answerable in a meeting: concrete, one decision per question, options listed, recommendation given with a one-line reason. "请明确优惠券规则" is useless. "同一订单能否叠加多张券？A 不可叠加（推荐，规则简单、财务对账清晰） B 不同类型可叠加 C 任意叠加" works.
 
-### 4. Write the draft
+### 5. Write the draft
 
 Follow the template at the end of this file, in the user's language (default 中文). Write the draft to `<system temp dir>/spring-detailed-design/{功能名}-详细设计.md`. The file name becomes the Word file's name. Points that matter:
 
@@ -61,7 +98,7 @@ Follow the template at the end of this file, in the user's language (default 中
 - DDL must be executable for the project's database.
 - Task breakdown: each task references its R items. Use relative size (S/M/L) unless the user asks for person-days.
 
-### 5. Convert to Word and check
+### 6. Convert to Word and check
 
 ```bash
 python <skill_dir>/md2docx.py <draft.md> --out-dir <target dir> [--template 公司模板.docx]
@@ -77,7 +114,7 @@ Target dir: where the user asked for it (often the folder holding the requiremen
 
 Never send document content to online services: design docs are confidential to the client.
 
-### 6. Hand over
+### 7. Hand over
 
 Tell the user:
 - the .docx path, and the R/AC/Q counts. List the **blocking questions** first, ready to paste into the meeting invite.
@@ -98,7 +135,7 @@ The user brings answers ("Q-03 选 B，Q-05 上限改成 3 张"), or the .docx w
 
 ## Checking implementation progress
 
-Read the design (`--read` if you only have the .docx). For each API in the 接口清单 and each table in the 表清单, look it up in the code with a bounded search, e.g. `grep -rn -F --include=*.java '"/api/v1/coupons' . | head` and the table name in `*.sql`, `@TableName` or `@Table`. Report a table of done / missing / changed, plus endpoints under the same path prefix that the design does not mention. Treat differences as questions to resolve, not automatically as code bugs: sometimes the code is right and the design should be updated.
+Read the design (`--read` if you only have the .docx). For each API in the 接口清单 and each table in the 表清单, look it up in the code with the bounded searches from step 3, e.g. `git grep -n -F '"/api/v1/coupons' -- "*.java" | head` and `git grep -n -i "t_coupon" -- "*.java" "*.xml" "*.sql" | head`. Report a table of done / missing / changed, plus endpoints under the same path prefix that the design does not mention. Treat differences as questions to resolve, not automatically as code bugs: sometimes the code is right and the design should be updated.
 
 ## Granularity checklist
 
@@ -264,7 +301,8 @@ stateDiagram-v2
 ## 2.1 总体设计
 - 涉及模块：{新增/修改的包、类}
 - 与现有功能的关系：{哪些现有接口、表、流程被修改}
-- 遵循的现有约定：{来自扫描：Result 包装、路径前缀、主键策略、逻辑删除、审计字段}
+- 遵循的现有约定：{来自代码调研：Result 包装、路径前缀、主键策略、逻辑删除、审计字段}
+- 代码依据：{调研时读过的关键文件，如 `common/Result.java`、`entity/Order.java`、`db/schema.sql`；已有类似功能写明是哪个}
 
 ```mermaid
 sequenceDiagram

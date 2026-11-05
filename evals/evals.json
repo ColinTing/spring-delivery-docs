@@ -106,6 +106,21 @@
         "[check] 以 ok 结尾",
         "技术设计沿用现有约定（Result<T>、/api/v1、t_ 表前缀）"
       ]
+    },
+    {
+      "id": 8,
+      "skill": "spring-detailed-design",
+      "prompt": "运营要做优惠券功能：满减券、折扣券、领券中心、下单用券，出个详细设计",
+      "project": "https://github.com/macrozheng/mall (clone --depth 1)，已经有一套优惠券实现",
+      "expected_output": "基于现有优惠券模块的修改型设计 .docx",
+      "expectations": [
+        "用 git grep 等有输出上限的命令定位代码，没有整目录列出、没有一次读入大文件（如 document/sql/mall.sql 只读相关行）",
+        "发现已有的 sms_coupon、sms_coupon_history 等表和 SmsCouponController、UmsMemberCouponController",
+        "设计写成对现有模块的修改或扩展，没有另建一套重复的优惠券表",
+        "沿用 CommonResult 返回包装和 sms_ 表前缀",
+        "2.1 的代码依据列出了读过的关键文件",
+        "[check] 以 ok 结尾"
+      ]
     }
   ]
 }
