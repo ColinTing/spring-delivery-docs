@@ -121,6 +121,21 @@
         "2.1 的代码依据列出了读过的关键文件",
         "[check] 以 ok 结尾"
       ]
+    },
+    {
+      "id": 9,
+      "skill": "spring-detailed-design",
+      "prompt": "前端想先对着 Mock 开发，把优惠券详细设计里的接口导出来，我们用 Apifox",
+      "project": "examples/demo-shop（含 docs/design/优惠券-详细设计.docx）",
+      "expected_output": "docs/design/ 下的 优惠券-详细设计.openapi.json",
+      "expectations": [
+        "用 md2docx.py --openapi 从 .docx 导出，没有手写或手改 JSON",
+        "[api] 行以 ok 结尾，导出 7 个新增接口",
+        "说明 POST /api/v1/orders（修改）没有导出，并列出需要在 Apifox 里手动补的 userCouponId、originalAmount、discountAmount",
+        "告诉用户在 Apifox 里用“导入数据 → OpenAPI/Swagger”导入，接口会放在“优惠券/管理后台”“优惠券/用户端”等目录下",
+        "提醒与接口相关的问题还没确认（如 Q-12 后台鉴权），评审后需要重新导出",
+        "没有把设计文档或导出的 JSON 发送到任何在线服务"
+      ]
     }
   ]
 }

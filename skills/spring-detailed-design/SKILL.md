@@ -1,6 +1,6 @@
 ---
 name: spring-detailed-design
-description: Turn a business requirements document (需求文档 / PRD / 需求说明书 / 需求规格, in Word, PDF, Markdown, or pasted text) into a pre-development detailed design document (详细设计 / 详细设计说明书 / 概要设计 / 技术方案 / 开发设计) delivered as a Word .docx, for a Java Spring project. The document has a business-confirmation part (numbered requirements, rules, flows, acceptance criteria, and a clarification question list for 需求评审 / 需求澄清 / 对齐颗粒度 with the business side) and a technical part (tables, APIs, state machines, task breakdown) that guides coding. Use when the user has a requirement doc and wants a design, wants to review/clarify requirements before coding, asks "这个需求怎么设计", "出个详细设计", "需求评审要准备什么", or brings back a reviewed/commented design .docx or answers to update it. Also use to check implementation progress against an existing design.
+description: Turn a business requirements document (需求文档 / PRD / 需求说明书 / 需求规格, in Word, PDF, Markdown, or pasted text) into a pre-development detailed design document (详细设计 / 详细设计说明书 / 概要设计 / 技术方案 / 开发设计) delivered as a Word .docx, for a Java Spring project. The document has a business-confirmation part (numbered requirements, rules, flows, acceptance criteria, and a clarification question list for 需求评审 / 需求澄清 / 对齐颗粒度 with the business side) and a technical part (tables, APIs, state machines, task breakdown) that guides coding. Use when the user has a requirement doc and wants a design, wants to review/clarify requirements before coding, asks "这个需求怎么设计", "出个详细设计", "需求评审要准备什么", or brings back a reviewed/commented design .docx or answers to update it. Also use to check implementation progress against an existing design, and to export the designed APIs as an OpenAPI file for Apifox or Postman (导出接口、给前端 Mock、OpenAPI、Swagger).
 ---
 
 # 需求 → 详细设计（Word）
@@ -94,7 +94,8 @@ Follow the template at the end of this file, in the user's language (default 中
 - Part 1 contains no code identifiers except where business people already use them (e.g. status names they know).
 - Use Mermaid for flows (`flowchart`), state machines (`stateDiagram-v2`) and key interactions (`sequenceDiagram`). Business people do read diagrams.
 - **API addresses are written `` `METHOD /path` ``**, and table design headings are `` #### `table_name` 说明（新增|修改） ``.
-- Extending an existing table: list only the new or changed columns, and say "修改" in the heading.
+- **API details are tables, not sentences.** Under each `` #### 名称 `METHOD /path` `` heading, the 请求头, 路径参数 and 查询参数, the request body's fields and the response class's fields each get a table, introduced by a line that names it (see the template). Describe the project's response wrapper and page class once, as `` 结构 `Result<T>`： `` and `` 结构 `PageResult<T>`： `` with the field names used in the code. Write enum values as `1 满减券，2 折扣券` or `UNUSED 未使用 / USED 已使用`, time formats as `yyyy-MM-dd HH:mm:ss`, and error codes as `错误码：3002–3005`. These tables are the API contract that `md2docx.py --openapi` exports for the frontend and testers. A parameter mentioned only in a sentence is lost, and the check flags it.
+- Extending an existing table: list only the new or changed columns, and say "修改" in the heading. The same goes for an existing API: list only the new fields, and end its heading with （修改）.
 - DDL must be executable for the project's database.
 - Task breakdown: each task references its R items. Use relative size (S/M/L) unless the user asks for person-days.
 
@@ -107,6 +108,7 @@ python <skill_dir>/md2docx.py <draft.md> --out-dir <target dir> [--template 公�
 Target dir: where the user asked for it (often the folder holding the requirement doc), else `docs/design/` in the project. Write nothing else into the source tree. Read the output:
 
 - `[check] … -- ok`: traceability holds. Every `!` line is a defect: an R without an AC, an R missing from the technical part, an id used but never defined, or a 【假设】 left for an answered question. Fix the draft and convert again until the line ends with `ok`.
+- `[api] … -- ok`: section 2.3 can be exported as an API contract. Every `! api` line names an API and what the export cannot read: parameters written in a sentence, a class with no field table, a path variable with no row, a time field without a format. Fix the draft and convert again. APIs marked （修改） are counted but never exported.
 - `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
 - `no Mermaid renderer` / `diagrams 0/N`: the .docx is still produced, with the diagram source kept. Rendering needs Node.js, but no global install: the script falls back to `npx` (installs into the user's npm cache, no admin rights; the first run downloads ~300 MB). To warm it up once: `npx -y @mermaid-js/mermaid-cli@11.4.2 --version` with `PUPPETEER_SKIP_DOWNLOAD=1` set (PowerShell: `$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx ...`). It uses the installed Chrome/Edge. Never suggest running npm as administrator.
 - `cannot write … close it in Word first`: the user has the file open.
@@ -121,6 +123,7 @@ Tell the user:
 - the assumptions with the biggest impact if wrong.
 - that Word asks to update fields when the file opens. Answering yes fills in the table of contents.
 - the next step: review Part 1 with the business side, then come back with the answers or their marked-up .docx.
+- that once the API-related questions are settled, the APIs can be exported for Apifox or Postman so the frontend and testers can start on mocks (see "Exporting the API contract").
 
 ## Updating after review
 
@@ -132,6 +135,23 @@ The user brings answers ("Q-03 选 B，Q-05 上限改成 3 张"), or the .docx w
 4. Resolve every review mark: apply or reject it, and note the outcome in the Q table or 修订记录. None may remain in the new version.
 5. New questions get new ids. Never renumber existing ones.
 6. Add a row to 修订记录, bump the version, and save the draft as `{功能名}-详细设计-v0.2.md` so the new .docx does not overwrite the reviewed one. Convert. The check flags assumptions left for answered questions.
+
+## Exporting the API contract (OpenAPI)
+
+When the user wants the APIs in Apifox or Postman, wants mocks for the frontend or testers, or asks for OpenAPI or Swagger, export from the latest design .docx, because review may have changed it:
+
+```bash
+python <skill_dir>/md2docx.py --openapi <design.docx> [--out-dir DIR]
+```
+
+It writes `<name>.openapi.json` (OpenAPI 3.0) next to the .docx and prints the same `[api]` check as the conversion. If there are `! api` findings, fix the design (as in "Updating after review") and export again. Never edit the JSON by hand: the Word document stays the master, and the JSON is regenerated from it after every review. Then tell the user:
+
+- **Apifox**: 导入数据 → OpenAPI/Swagger, then choose the file. The APIs land in folders `{功能名}/{调用方}`, and the mock data follows the field types, ranges, lengths, enums and time formats, so the frontend can start before the backend exists.
+- **Postman**: Import the file. Postman fills request bodies with placeholders such as `<string>` unless "Parameter generation" in the import settings is set to Example.
+- **Not exported**: the APIs marked （修改）. The design lists only their new fields, and importing them would overwrite the complete definition already in the tool, so name the fields to add by hand.
+- **Still open**: the open questions that affect the APIs (Q ids cited by 【假设】 in 2.3). Until they are answered the contract can change; export and import again after the next review.
+
+The export runs locally. As with the design itself, do not upload it to any online service; importing it into the team's tool is the user's step.
 
 ## Checking implementation progress
 
@@ -205,6 +225,7 @@ Keep the id formats exactly, because `md2docx.py` checks them:
 - Design decisions `D-01`, tasks `T-01`: first cell of their tables
 - The technical part starts with a heading containing 技术设计
 - APIs `` `METHOD /path` ``; table design headings `` #### `table_name` 说明（新增|修改） ``
+- API details (exported to OpenAPI): heading `` #### 名称 `METHOD /path` ``, with （修改） at the end for a changed existing API. Each table comes right after a line naming it: `请求头：`, `路径参数：`, `查询参数：`, `` 请求体 `Class`： ``, `` 响应 `Result<Class>`： ``. A response without fields of its own is one line, e.g. `` 响应 `Result<Void>`。 ``. Classes shared by several APIs, nested classes and generic wrappers are described once as `` 结构 `Class`： `` or `` 结构 `Result<T>`： ``. Parameter and request tables have the columns 参数/字段 | 类型 | 必填 | 校验 | 说明, response tables 字段 | 类型 | 说明, with Java types in 类型
 
 Everything else is guidance. Drop a subsection that truly does not apply, and write "无" rather than leaving an empty heading where the reader would expect content (e.g. 权限).
 
@@ -340,10 +361,82 @@ sequenceDiagram
 
 | 接口 | 说明 | 调用方 | 关联需求 |
 |---|---|---|---|
-| `POST /api/v1/coupons` | 创建优惠券 | 管理后台 | R-01 |
+| `POST /api/v1/admin/coupons` | 创建优惠券 | 管理后台 | R-01 |
 
 ### 2.3.2 接口详情
-{每个接口：请求参数表（字段/类型/必填/校验/说明）、响应字段表、错误码。复用项目的统一响应结构}
+
+{统一返回类和分页类各写一次，字段名以代码为准；再写一句时间字段的格式}
+
+结构 `Result<T>`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| code | Integer | 状态码，0 表示成功，其他为错误码 |
+| msg | String | 提示信息 |
+| data | T | 业务数据 |
+
+结构 `PageResult<T>`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| total | Long | 总条数 |
+| records | List<T> | 当前页数据 |
+
+#### 创建优惠券 `POST /api/v1/admin/coupons`
+
+请求体 `CouponCreateDTO`：
+
+| 字段 | 类型 | 必填 | 校验 | 说明 |
+|---|---|---|---|---|
+| name | String | 是 | `@NotBlank @Size(max=30)` | 券名称 |
+| type | Integer | 是 | 1 满减券，2 折扣券 | 券类型 |
+| reduceAmount | BigDecimal | 满减券必填 | 0.01–9999.99 | 减免金额 |
+| startTime | String | 是 | `yyyy-MM-dd HH:mm:ss` | 开始时间 |
+
+响应 `Result<Long>`：data 为券 ID。
+
+错误码：3001
+
+#### 优惠券列表 `GET /api/v1/admin/coupons`
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 校验 | 说明 |
+|---|---|---|---|---|
+| pageNum | Integer | 否 | 默认 1 | 页码 |
+| state | String | 否 | NOT_STARTED 未开始 / ONGOING 进行中 / ENDED 已结束 | 运营状态 |
+
+响应 `Result<PageResult<AdminCouponVO>>`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | Long | 券 ID |
+| maxDiscountAmount | BigDecimal | 最高优惠金额，为空表示不封顶 |
+| endTime | LocalDateTime | 有效期结束 |
+
+#### 领取优惠券 `POST /api/v1/coupons/{id}/receive`
+
+请求头：
+
+| 参数 | 类型 | 必填 | 校验 | 说明 |
+|---|---|---|---|---|
+| X-User-Id | Long | 是 | | 当前用户 ID |
+
+路径参数：
+
+| 参数 | 类型 | 必填 | 校验 | 说明 |
+|---|---|---|---|---|
+| id | Long | 是 | | 券 ID |
+
+处理逻辑见 2.4.1。
+
+响应 `Result<Long>`：data 为用户券 ID。
+
+错误码：3002–3005
+
+#### 创建订单 `POST /api/v1/orders`（修改）
+
+{格式同上，只列新增或修改的字段}
 
 ## 2.4 关键逻辑
 {状态机实现、计算公式、并发控制（锁/乐观锁/唯一索引）、幂等、事务边界、定时任务（cron、处理量、失败重试）、与外部系统交互。每段注明关联需求}

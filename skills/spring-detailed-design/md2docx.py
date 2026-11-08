@@ -12,6 +12,10 @@
       Markdown for reading or editing, with an outline printed instead of the content.
       Tracked changes become [+added+] / [-deleted-], comments [\u6279\u6ce8 author\uff1atext].
       Diagrams made by this script come back as Mermaid (the source is in the alt text).
+  python md2docx.py <design.docx | design.md> --openapi [--out-dir DIR]
+      Design docs: writes <name>.openapi.json (OpenAPI 3.0) from section 2.3 for Apifox or Postman,
+      next to the input unless --out-dir is given. Converting a design doc always checks that
+      section and prints an [api] line; every "! api" finding is a table the export cannot read.
 
 Install: python -m pip install python-docx. Nothing is sent to online services.
 Shared by both skills: edit skills/spring-delivery-docs/scripts/md2docx.py, then run
@@ -537,7 +541,7 @@ def trace_check(md):
             if ID.fullmatch(first):
                 defined[first] = cells(line)
     if not any(k.startswith("R-") for k in defined):
-        return
+        return False
     refs = {m.group(0) for m in ID.finditer(md)}
     issues = [f"{i} is referenced but never defined" for i in sorted(refs - set(defined))]
     covered = {m.group(0) for k, row in defined.items() if k.startswith("AC-") for m in ID.finditer(" ".join(row[1:2]))}
@@ -559,6 +563,630 @@ def trace_check(md):
           f"{len(blocking)}: {', '.join(blocking) or '-'}) \u3010\u5047\u8bbe\u3011={assumptions}" + ("" if issues else " -- ok"))
     for x in issues:
         print(f"  ! {x}")
+    return True
+
+
+# --------------------------------------------------------------------------- OpenAPI export
+
+API_HEAD = re.compile(r"^(.*?)\s*`(GET|POST|PUT|DELETE|PATCH)\s+(/[^`\s]*)`(.*)$", re.I)
+API_LABEL = re.compile(r"^\**(\u8bf7\u6c42\u5934|\u8def\u5f84\u53c2\u6570|\u67e5\u8be2\u53c2\u6570|\u8bf7\u6c42\u4f53|\u54cd\u5e94|\u7ed3\u6784)\**\s*(?:`([^`]+)`)?\s*"
+                       r"(?:[\uff08(][^\uff09)]*[\uff09)])?\s*(?:[\uff1a:\uff0c,\u3002]\s*(.*)|$)")
+API_IN = {"\u8bf7\u6c42\u5934": "header", "\u8def\u5f84\u53c2\u6570": "path", "\u67e5\u8be2\u53c2\u6570": "query"}
+API_COLUMNS = {"name": ("\u5b57\u6bb5", "\u53c2\u6570", "\u53c2\u6570\u540d", "\u5b57\u6bb5\u540d", "\u5c5e\u6027"), "type": ("\u7c7b\u578b",),
+               "required": ("\u5fc5\u586b", "\u662f\u5426\u5fc5\u586b"), "rule": ("\u6821\u9a8c", "\u6821\u9a8c\u89c4\u5219", "\u7ea6\u675f", "\u53d6\u503c"),
+               "default": ("\u9ed8\u8ba4\u503c",), "desc": ("\u8bf4\u660e", "\u63cf\u8ff0", "\u542b\u4e49", "\u5907\u6ce8"), "example": ("\u793a\u4f8b", "\u793a\u4f8b\u503c")}
+MODIFIED = re.compile(r"[\uff08(]\**\u4fee\u6539|\*\*\u4fee\u6539\*\*")
+ERR_CODES = re.compile(r"\u9519\u8bef\u7801\s*[\uff1a:]?\s*((?:\d{3,6}(?:\s*[\u2013\u2014~\uff5e\-\u81f3\u5230]\s*\d{3,6})?(?:\s*[\u3001,\uff0c/\u548c\u53ca]\s*|\s+)?)+)")
+TIME_FMT = re.compile(r"yyyy[-/.]?MM[-/.]?dd(?:[ T]HH:mm(?::ss)?)?")
+NUM = r"-?\d+(?:\.\d+)?"
+RANGE = re.compile(r"(?<![\d.\-])(" + NUM + r")\s*(?:\u2013|\u2014|~|\uff5e|\u81f3|\u5230|-)\s*(" + NUM + r")(?![\d.\-:])")
+YES, NO = ("\u662f", "y", "yes", "true", "\u5fc5\u586b", "\u221a"), ("\u5426", "n", "no", "false", "\u975e\u5fc5\u586b", "", "-", "\u2014")
+JAVA = {"String": ("string", None), "CharSequence": ("string", None), "char": ("string", None),
+        "Character": ("string", None), "LocalTime": ("string", None), "UUID": ("string", "uuid"),
+        "Integer": ("integer", "int32"), "int": ("integer", "int32"), "Short": ("integer", "int32"),
+        "short": ("integer", "int32"), "Byte": ("integer", "int32"), "byte": ("integer", "int32"),
+        "Long": ("integer", "int64"), "long": ("integer", "int64"), "BigInteger": ("integer", None),
+        "BigDecimal": ("number", None), "Number": ("number", None), "Double": ("number", "double"),
+        "double": ("number", "double"), "Float": ("number", "float"), "float": ("number", "float"),
+        "Boolean": ("boolean", None), "boolean": ("boolean", None), "MultipartFile": ("string", "binary")}
+DATETIME = {"LocalDateTime", "Date", "Timestamp", "ZonedDateTime", "OffsetDateTime", "Instant", "DateTime"}
+DATE_ONLY = {"LocalDate"}
+LISTS = {"List", "ArrayList", "LinkedList", "Set", "HashSet", "LinkedHashSet", "TreeSet", "Collection", "Iterable"}
+MAPS, VOID, ANY = {"Map", "HashMap", "LinkedHashMap", "TreeMap"}, {"Void", "void"}, {"Object", "JsonNode", "JSONObject"}
+
+
+def java_type(text):
+    """'Result<PageResult<CouponVO>>' -> ('Result', [('PageResult', [('CouponVO', [])])]); None if unreadable."""
+    s = re.sub(r"\s+", "", re.split(r"[\uff08(\u4e00-\u9fff]", text.replace("`", ""), maxsplit=1)[0])
+    pos = [0]
+
+    def node():
+        m = re.compile(r"[A-Za-z_$][\w.$]*").match(s, pos[0])
+        if not m:
+            raise ValueError(s)
+        name, args = m.group(0).split(".")[-1], []
+        pos[0] = m.end()
+        if s[pos[0]:pos[0] + 1] == "<":
+            pos[0] += 1
+            args.append(node())
+            while s[pos[0]:pos[0] + 1] == ",":
+                pos[0] += 1
+                args.append(node())
+            if s[pos[0]:pos[0] + 1] != ">":
+                raise ValueError(s)
+            pos[0] += 1
+        while s[pos[0]:pos[0] + 2] == "[]":
+            pos[0] += 2
+            name, args = "List", [(name, args)]
+        return name, args
+
+    try:
+        n = node()
+    except ValueError:
+        return None
+    return n if pos[0] == len(s) else None
+
+
+def field_rows(rows):
+    """A parameter or field table -> [{name, type, required, rule, default, desc, example}], None if not one."""
+    head = [re.sub(r"[*\s]", "", c) for c in rows[0]]
+    col = {k: next((i for i, h in enumerate(head) if h in names), None) for k, names in API_COLUMNS.items()}
+    if col["name"] is None or col["type"] is None:
+        return None
+    out = []
+    for r in rows[1:]:
+        f = {k: (re.sub(r"<br\s*/?>", "\n", r[i]).strip() if i is not None and i < len(r) else "") for k, i in col.items()}
+        f["name"] = re.sub(r"[`*\s]", "", f["name"])
+        if f["name"]:
+            out.append(f)
+    return out
+
+
+def codes_in(text):
+    out = []
+    for m in ERR_CODES.finditer(text):
+        for a, b in re.findall(r"(\d{3,6})(?:\s*[\u2013\u2014~\uff5e\-\u81f3\u5230]\s*(\d{3,6}))?", m.group(1)):
+            a, b = int(a), int(b or a)
+            out += list(range(a, b + 1)) if 0 <= b - a <= 50 else [a, b]
+    return out
+
+
+def int_enum(text):
+    """'1 \u6ee1\u51cf\u5238\uff0c2 \u6298\u6263\u5238' / '1 \u6216 2' -> [(1, '\u6ee1\u51cf\u5238'), (2, '\u6298\u6263\u5238')]"""
+    out = []
+    for p in (p.strip() for p in re.split(r"[\uff0c,\u3001;\uff1b/|]|\u6216", text) if p.strip()):
+        m = re.fullmatch(r"(-?\d+)(?:\s*[-:\uff1a=.]?\s*([\u4e00-\u9fffA-Za-z][^\uff0c,\u3001;\uff1b/|]*))?", p)
+        if not m:
+            return None
+        out.append((int(m.group(1)), (m.group(2) or "").strip()))
+    return out if len(out) >= 2 and len({v for v, _ in out}) == len(out) else None
+
+
+def str_enum(text):
+    """'UNUSED \u672a\u4f7f\u7528 / USED \u5df2\u4f7f\u7528' -> [('UNUSED', '\u672a\u4f7f\u7528'), ('USED', '\u5df2\u4f7f\u7528')]"""
+    out = []
+    for p in (p.strip() for p in re.split(r"[\uff0c,\u3001;\uff1b/|]", text) if p.strip()):
+        m = re.fullmatch(r"`?([A-Z][A-Z0-9_]+)`?(?:\s*[-:\uff1a=]?\s*[\uff08(]?\s*([\u4e00-\u9fffA-Za-z][^\uff09)]*?)\s*[\uff09)]?)?", p)
+        if not m:
+            return None
+        out.append((m.group(1), (m.group(2) or "").strip()))
+    return out if len(out) >= 2 and len({v for v, _ in out}) == len(out) else None
+
+
+def enum_text(desc):
+    """The enum part of a \u8bf4\u660e cell: '\u8fd0\u8425\u72b6\u6001\uff1aA \u7532 / B \u4e59\uff1b\u7531\u2026\u8ba1\u7b97' -> 'A \u7532 / B \u4e59'"""
+    return re.sub(r"^[^\uff1a:\uff0c,]{1,20}[\uff1a:]\s*", "", re.split(r"[\uff1b;\u3002\n]", desc, maxsplit=1)[0])
+
+
+def annotation_args(text):
+    text = text.strip()
+    pairs = re.findall(r"(\w+)\s*=\s*(\"(?:[^\"\\]|\\.)*\"|[^,]+)", text)
+    if pairs:
+        return {k: v.strip().strip('"') for k, v in pairs}
+    return {"value": text.strip('"')} if text else {}
+
+
+def number(text, kind):
+    v = float(text)
+    return int(v) if kind == "integer" or v.is_integer() else v
+
+
+def coerce(text, s):
+    """A default or example written in the doc, as the field's JSON type; None if it does not fit."""
+    text, kind = text.strip().strip("`'\""), s.get("type")
+    try:
+        if kind in ("integer", "number"):
+            v = number(text, kind)
+        elif kind == "boolean":
+            v = {"true": True, "\u662f": True, "false": False, "\u5426": False}[text.lower()]
+        elif kind == "string" and (re.fullmatch(r"[\w.:\- ]+", text, re.A) or text in s.get("enum", [])):
+            v = text
+        else:
+            return None
+    except (ValueError, KeyError):
+        return None
+    return v if "enum" not in s or v in s["enum"] else None
+
+
+def describe(f):
+    parts, req = [f["desc"]], f["required"].strip().strip("*")
+    if req and req.lower() not in YES + NO:
+        parts.append(req)  # a condition, e.g. required only for one coupon type
+    if f["rule"] and not re.fullmatch(r"\u9ed8\u8ba4(?:\u503c)?(?:\u4e3a)?\s*[\uff1a:]?\s*\S+", f["rule"]):
+        parts.append("\u6821\u9a8c\uff1a" + f["rule"])
+    return "\uff1b".join(p for p in parts if p)
+
+
+def sample(s, f):
+    """An example value that satisfies the schema, so Postman's mock returns something sensible."""
+    if s.get("enum"):
+        return s["enum"][0]
+    if "default" in s:
+        return s["default"]
+    kind, lo, hi = s.get("type"), s.get("minimum"), s.get("maximum")
+    if kind in ("integer", "number"):
+        m = re.search(r"(?<![\d.])(" + NUM + r")\s*(?:\u8868\u793a|\u4ee3\u8868)", f["desc"])
+        c = number(m.group(1), kind) if m else None
+        if c is not None and (lo is None or c >= lo) and (hi is None or c <= hi):
+            return c
+        step = s.get("multipleOf")
+        for c in (100, 10, 1):
+            if (lo is None or c >= lo) and (hi is None or c <= hi) and (not step or abs(c / step - round(c / step)) < 1e-9):
+                return c
+        return lo if lo is not None else hi
+    if kind == "boolean":
+        return True
+    if kind == "string" and not s.get("format") and "pattern" not in s:
+        m = re.search(r"\u5982\s*[\u201c\"\u300c]([^\u201d\"\u300d]+)[\u201d\"\u300d]", f["desc"])
+        text = m.group(1) if m else re.split(r"[\uff0c,\uff1b;\u3002\uff08(\uff1a:\n]", f["desc"])[0].strip() or f["name"]
+        return text[:s["maxLength"]] if "maxLength" in s else text
+    return None
+
+
+def time_schema(fmt, date_only):
+    if not fmt:
+        return {"type": "string", "format": "date" if date_only else "date-time"}
+    if date_only:
+        fmt = re.split(r"[ T]", fmt)[0]
+    rx, ex = "", fmt
+    for tok in re.findall(r"yyyy|MM|dd|HH|mm|ss|.", fmt):
+        rx += "\\d{%d}" % len(tok) if len(tok) > 1 else "\\." if tok == "." else tok
+    for tok, v in (("yyyy", "2026"), ("MM", "12"), ("dd", "10"), ("HH", "09"), ("mm", "30"), ("ss", "00")):
+        ex = ex.replace(tok, v)
+    return {"type": "string", "pattern": "^" + rx + "$", "example": ex,
+            "x-apifox-mock": "@%s('%s')" % ("datetime" if "HH" in fmt else "date", fmt)}
+
+
+class ApiDesign:
+    """Section 2.3 \u63a5\u53e3\u8bbe\u8ba1 of a design doc -> OpenAPI 3.0 for Apifox and Postman. It reads the API
+    headings `METHOD /path` and the tables after the lines \u8bf7\u6c42\u5934 / \u8def\u5f84\u53c2\u6570 / \u67e5\u8be2\u53c2\u6570 / \u8bf7\u6c42\u4f53 `T` /
+    \u54cd\u5e94 `T` / \u7ed3\u6784 `T`. Whatever it cannot read becomes a finding, never a guess."""
+
+    def __init__(self, md, stem):
+        bl = blocks(md)
+        self.stem, self.issues, self.notes, self.apis, self.labels = stem, [], [], [], []
+        self.listed, self.codes, self.generic, self.named, self.fallback = {}, {}, {}, {}, set()
+        self.title = next((b[2] for b in bl if b[0] == "h" and b[1] == 1), stem).strip()
+        self.feature = re.sub(r"\s*\u8be6\u7ec6\u8bbe\u8ba1.*$", "", self.title) or self.title
+        self.version = next((r[1].strip() for b in bl if b[0] == "table" for r in b[1][1:]
+                             if len(r) > 1 and r[0].strip("* ") == "\u7248\u672c"), "") or "v1"
+        start = next((i for i, b in enumerate(bl) if b[0] == "h" and "\u63a5\u53e3\u8bbe\u8ba1" in b[2]), None)
+        self.found = start is not None
+        if not self.found:
+            return
+        end = next((i for i in range(start + 1, len(bl)) if bl[i][0] == "h" and bl[i][1] <= bl[start][1]), len(bl))
+        sec = bl[start + 1:end]
+        text = "\n".join(x if isinstance(x, str) else " ".join(" ".join(r) for r in x) for b in sec for x in b[1:]
+                         if isinstance(x, (str, list)))
+        m = TIME_FMT.search(text)
+        self.time_fmt = m.group(0) if m else None
+        self.parse(sec)
+        self.doc = self.build()
+
+    def where(self, api):
+        return "%s %s" % (api["method"].upper(), api["path"])
+
+    def issue(self, where, msg):
+        x = "%s: %s" % (self.where(where) if isinstance(where, dict) else where, msg)
+        if x not in self.issues:
+            self.issues.append(x)
+
+    # ---- reading the section
+
+    def parse(self, sec):
+        cur, level, pending = None, 0, None
+        for k, b in enumerate(sec):
+            nxt = sec[k + 1] if k + 1 < len(sec) else ("",)
+            if b[0] == "h":
+                m = API_HEAD.match(b[2])
+                if m:
+                    cur, level = {"name": m.group(1).strip(" *"), "method": m.group(2).lower(), "path": m.group(3),
+                                  "modified": bool(MODIFIED.search(m.group(4))), "params": [], "body": None,
+                                  "resp": None, "codes": [], "notes": []}, b[1]
+                    self.apis.append(cur)
+                elif cur is not None and b[1] <= level:
+                    cur = None
+                continue
+            if b[0] == "table":
+                rows = b[1]
+                if pending:
+                    self.labels.append(pending + (rows,))
+                    pending = None
+                    continue
+                head = [re.sub(r"[*\s]", "", c) for c in rows[0]]
+                if head[0] == "\u63a5\u53e3":
+                    for r in rows[1:]:
+                        m = re.search(r"`(GET|POST|PUT|DELETE|PATCH)\s+(/[^`\s]*)`", r[0], re.I)
+                        if m:
+                            self.listed[(m.group(1).lower(), m.group(2))] = dict(zip(head, r))
+                elif head[0] == "\u9519\u8bef\u7801":
+                    for r in rows[1:]:
+                        if re.fullmatch(r"\d{3,6}", r[0].strip()):
+                            self.codes[int(r[0])] = r[1].strip() if len(r) > 1 else ""
+                elif cur is not None and field_rows(rows) is not None:
+                    self.issue(cur, "a table has no \u8bf7\u6c42\u5934/\u8def\u5f84\u53c2\u6570/\u67e5\u8be2\u53c2\u6570/\u8bf7\u6c42\u4f53/\u54cd\u5e94 line right before it")
+                continue
+            if b[0] == "p":
+                m = API_LABEL.match(b[1])
+                if m:
+                    label = (m.group(1), m.group(2), ERR_CODES.sub("", m.group(3) or "").strip(), cur)
+                    if nxt[0] == "table":
+                        pending = label
+                    else:
+                        self.labels.append(label + (None,))
+                    if cur is not None:
+                        cur["codes"] += codes_in(b[1])
+                    continue
+                text = b[1]
+            elif b[0] == "li":
+                text = "  " * b[1] + ("- " if b[2] in "-*+" else b[2] + " ") + b[3]
+            elif b[0] == "quote":
+                text = "> " + b[1]
+            elif b[0] == "code":
+                text = "```%s\n%s\n```" % (b[1], b[2])
+            else:
+                continue
+            if re.fullmatch(r"\*\*[^*]+\*\*\s*[\uff1a:]?", text):
+                continue
+            if cur is None:
+                self.notes.append(text)
+                continue
+            cur["codes"] += codes_in(text)
+            m = re.search(r"\u54cd\u5e94\s*`([^`]+)`", text)
+            if m and b[0] == "p" and not any(x[0] == "\u54cd\u5e94" and x[3] is cur for x in self.labels):
+                self.labels.append(("\u54cd\u5e94", m.group(1), "", cur, None))
+            m = re.search(r"\u8bf7\u6c42\u5934|\u8def\u5f84\u53c2\u6570|\u67e5\u8be2\u53c2\u6570", text)
+            if m:
+                self.issue(cur, "%s are written in a sentence; put them in a table after a line '%s\uff1a'"
+                           % (m.group(0), m.group(0)))
+            if ERR_CODES.sub("", text).strip(" \u3002.\uff1b;\uff0c,") or b[0] != "p":
+                cur["notes"].append(text)
+        for a in self.apis:
+            row = self.listed.get((a["method"], a["path"]), {})
+            if MODIFIED.search(" ".join(row.values())) or row.get("\u53d8\u66f4\u7c7b\u578b", "").strip("* ") == "\u4fee\u6539":
+                a["modified"] = True
+        for label, typ, rest, api, rows in self.labels:
+            where = api or ("\u7ed3\u6784 `%s`" % typ if label == "\u7ed3\u6784" else "\u63a5\u53e3\u8bbe\u8ba1")
+            fields = field_rows(rows) if rows else None
+            if rows and fields is None:
+                self.issue(where, "the table after '%s' needs the columns \u5b57\u6bb5 (or \u53c2\u6570) and \u7c7b\u578b" % label)
+                continue
+            if label == "\u7ed3\u6784":
+                node = java_type(typ or "")
+                if node is None or not fields:
+                    self.issue(where, "\u7ed3\u6784 needs a class name in backticks and a field table")
+                elif node[1]:
+                    self.generic[node[0]] = ([a[0] for a in node[1]], fields)
+                else:
+                    self.define(node[0], fields, where)
+            elif api is None:
+                self.issue(where, "'%s' is not under an API heading `METHOD /path`" % label)
+            elif label in API_IN:
+                if fields is None:
+                    self.issue(api, "%s has no table" % label)
+                api["params"] += [(API_IN[label], f) for f in fields or []]
+            else:
+                api["body" if label == "\u8bf7\u6c42\u4f53" else "resp"] = (typ, fields, rest)
+        for a in self.apis:  # a table after a body/response line describes the innermost class of its type
+            for slot in ("body", "resp"):
+                if a[slot] and a[slot][0] and a[slot][1] and not a["modified"]:
+                    node = java_type(a[slot][0])
+                    own = self.own_types(node) if node else []
+                    if not own:
+                        self.issue(a, "`%s` has no class of its own for the table to describe" % a[slot][0])
+                    else:
+                        self.define(own[-1], a[slot][1], a)
+
+    def known(self, name):
+        return (name in JAVA or name in DATETIME or name in DATE_ONLY or name in LISTS or name in MAPS
+                or name in VOID or name in ANY or name in self.generic)
+
+    def own_types(self, node, out=None):
+        out = [] if out is None else out
+        for a in node[1]:
+            self.own_types(a, out)
+        if not node[1] and not self.known(node[0]) and not (len(node[0]) == 1 and node[0].isupper()):
+            out.append(node[0])
+        return out
+
+    def define(self, name, fields, where):
+        old = self.named.get(name)
+        if old is None:
+            self.named[name] = fields
+        elif [f["name"] for f in old] != [f["name"] for f in fields]:
+            self.issue(where, "%s is described twice with different fields; the first table is used" % name)
+
+    # ---- building OpenAPI
+
+    def resolve(self, node, env, where):
+        name, args = node
+        if name in env:
+            return env[name]
+        if name in VOID:
+            return None
+        if name in ANY:
+            return {}
+        if name in JAVA:
+            kind, fmt = JAVA[name]
+            return dict({"type": kind}, **({"format": fmt} if fmt else {}))
+        if name in DATETIME or name in DATE_ONLY:
+            return time_schema(self.time_fmt, name in DATE_ONLY)
+        inner = [self.resolve(a, env, where) for a in args]
+        if name in LISTS:
+            return {"type": "array", "items": inner[0] if inner and inner[0] is not None else {}}
+        if name in MAPS:
+            return {"type": "object", "additionalProperties": inner[-1] if inner and inner[-1] is not None else {}}
+        if name in self.generic:
+            params, fields = self.generic[name]
+            return self.object_schema(fields, dict(zip(params, inner)), where)
+        if args:  # a wrapper the doc never described: assume the usual shape, and say so
+            page = "Page" in name
+            if name not in self.fallback:
+                self.fallback.add(name)
+                self.issue(where, "%s<T> is not described; exported as %s. Add a table '\u7ed3\u6784 `%s<T>`\uff1a' with the "
+                                  "real field names" % (name, "total/records" if page else "code/message/data", name))
+            item = inner[-1] if inner[-1] is not None else {"type": "object", "nullable": True}
+            if page:
+                return {"type": "object", "properties": {"total": {"type": "integer", "format": "int64"},
+                                                         "records": {"type": "array", "items": item}}}
+            return {"type": "object", "properties": {"code": {"type": "integer", "format": "int32"},
+                                                     "message": {"type": "string"}, "data": item}}
+        if name in self.named:
+            return {"$ref": "#/components/schemas/" + name}
+        if len(name) == 1 and name.isupper():
+            return {}
+        self.issue(where, "class %s has no field table; describe it with '\u7ed3\u6784 `%s`\uff1a' or where it is returned" % (name, name))
+        return {"type": "object"}
+
+    def field_schema(self, f, env, where):
+        node = java_type(f["type"])
+        where = "%s, %s" % (self.where(where) if isinstance(where, dict) else where, f["name"])
+        if node is None:
+            self.issue(where, "cannot read the type '%s'" % f["type"])
+            s = {"type": "string"}
+        elif (not node[1] and node[0] not in env and node[0] not in self.named and not self.known(node[0])
+              and (str_enum(f["rule"]) or str_enum(enum_text(f["desc"])))):
+            s = {"type": "string"}  # a Java enum, serialized by name
+        else:
+            s = self.resolve(node, env, where)
+            s = {"type": "object", "nullable": True} if s is None else dict(s)
+        d = describe(f)
+        if "$ref" in s:
+            return {"allOf": [s], "description": d} if d else s
+        self.cur_where = where.rsplit(", ", 1)[0]
+        self.constrain(s, f, node)
+        if re.search(r"\u4e3a\u7a7a|\u7a7a\u8868\u793a|\u53ef\u4e3a\u7a7a|\u53ef\u7a7a|\bnull\b", f["desc"], re.I) and "properties" not in s:
+            s["nullable"] = True
+        if d:
+            s["description"] = d
+        return s
+
+    def constrain(self, s, f, node):
+        """Validation rules written in the doc -> JSON Schema keywords."""
+        rule, desc, kind = f["rule"], f["desc"], s.get("type")
+        for m in re.finditer(r"@(\w+)\s*(?:\(([^)]*)\))?", rule):
+            ann, args = m.group(1), annotation_args(m.group(2) or "")
+            v = args.get("value")
+            if ann in ("NotBlank", "NotEmpty") and kind == "string":
+                s["minLength"] = max(1, s.get("minLength", 0))
+            elif ann == "NotEmpty" and kind == "array":
+                s["minItems"] = 1
+            elif ann in ("Size", "Length"):
+                key = ("minItems", "maxItems") if kind == "array" else ("minLength", "maxLength")
+                for a, k in (("min", key[0]), ("max", key[1])):
+                    if args.get(a) is not None:
+                        s[k] = int(float(args[a]))
+            elif ann in ("Min", "DecimalMin", "Max", "DecimalMax") and v is not None and kind in ("integer", "number"):
+                low = "Min" in ann
+                s["minimum" if low else "maximum"] = number(v, kind)
+                if args.get("inclusive") == "false":
+                    s["exclusiveMinimum" if low else "exclusiveMaximum"] = True
+            elif ann in ("Positive", "PositiveOrZero"):
+                s["minimum"] = 0
+                if ann == "Positive":
+                    s["exclusiveMinimum"] = True
+            elif ann == "Pattern" and args.get("regexp"):
+                s["pattern"] = args["regexp"].replace("\\\\", "\\")
+            elif ann == "Email":
+                s["format"] = "email"
+            elif ann == "Digits" and args.get("fraction") is not None and kind == "number":
+                s["multipleOf"] = 10 ** -int(args["fraction"])
+        fm = TIME_FMT.search(rule) or TIME_FMT.search(desc)
+        if kind == "string" and fm:
+            s.pop("format", None)
+            s.update(time_schema(fm.group(0), node is not None and node[0] in DATE_ONLY))
+        if kind in ("integer", "number", "string") and "pattern" not in s:
+            m = RANGE.search(rule)
+            if m and kind == "string":
+                s.setdefault("minLength", int(float(m.group(1))))
+                s.setdefault("maxLength", int(float(m.group(2))))
+            elif m:
+                s.setdefault("minimum", number(m.group(1), kind))
+                s.setdefault("maximum", number(m.group(2), kind))
+            for rx, k in ((r"(?:\u2265|>=|\u4e0d\u5c0f\u4e8e)\s*(" + NUM + ")", "minimum"), (r"(?:\u2264|<=|\u4e0d\u5927\u4e8e)\s*(" + NUM + ")", "maximum")):
+                m = re.search(rx, rule)
+                if m and kind != "string":
+                    s.setdefault(k, number(m.group(1), kind))
+            m = re.search(r"(\d)\s*\u4f4d\u5c0f\u6570", rule)
+            if m and kind == "number":
+                s.setdefault("multipleOf", 10 ** -int(m.group(1)))
+        if (kind == "string" and "pattern" not in s and not s.get("format") and node is not None
+                and node[0] in JAVA and re.search(r"(Time|Date|At)$", f["name"])):
+            self.issue(self.cur_where, "%s looks like a time: write its format in \u6821\u9a8c (e.g. `yyyy-MM-dd HH:mm:ss`) "
+                                       "or type it LocalDateTime" % f["name"])
+        if kind in ("integer", "string") and "enum" not in s:
+            for text in (rule, enum_text(desc)):
+                e = (int_enum if kind == "integer" else str_enum)(text) if text else None
+                if e:
+                    s["enum"] = [v for v, _ in e]
+                    if any(label for _, label in e):
+                        s["x-apifox-enum"] = [{"value": v, "name": "", "description": label} for v, label in e]
+                    break
+        m = None if f["default"] else re.search(r"\u9ed8\u8ba4(?:\u503c)?(?:\u4e3a)?\s*[\uff1a:]?\s*([^\s\uff0c,\uff1b;\u3002\u3001\uff08\uff09()]+)", rule + "\uff1b" + desc)
+        dv = f["default"] or (m.group(1) if m else "")
+        if dv and coerce(dv, s) is not None:
+            s["default"] = coerce(dv, s)
+        ex = coerce(f["example"], s) if f["example"] else None
+        ex = sample(s, f) if ex is None else ex
+        if ex is not None and "example" not in s:
+            s["example"] = ex
+
+    def object_schema(self, fields, env, where):
+        props, req = {}, []
+        for f in fields:
+            if not re.fullmatch(r"[A-Za-z_$][\w$-]*", f["name"]):
+                self.issue(where, "field '%s': describe a nested object with its own '\u7ed3\u6784 `Xxx`\uff1a' table" % f["name"])
+                continue
+            props[f["name"]] = self.field_schema(f, env, where)
+            if f["required"].strip().strip("*").lower() in YES:
+                req.append(f["name"])
+        return dict({"type": "object", "properties": props}, **({"required": req} if req else {}))
+
+    def payload(self, slot, api):
+        typ, fields, _ = slot
+        if typ:
+            node = java_type(typ)
+            if node is None:
+                self.issue(api, "cannot read the type `%s`" % typ)
+                return {"type": "object"}
+            return self.resolve(node, {}, api)
+        if fields:
+            self.issue(api, "add the class name, e.g. '\u8bf7\u6c42\u4f53 `XxxDTO`\uff1a'")
+            return self.object_schema(fields, {}, api)
+        self.issue(api, "the \u8bf7\u6c42\u4f53/\u54cd\u5e94 line has neither a class name nor a table")
+        return None
+
+    def operation(self, a):
+        row = self.listed.get((a["method"], a["path"]), {})
+        caller = (row.get("\u8c03\u7528\u65b9") or "").strip("* ")
+        params = []
+        for where_in, f in a["params"]:
+            s = self.field_schema(f, {}, a)
+            p = {"name": f["name"], "in": where_in, "schema": s,
+                 "required": where_in == "path" or f["required"].strip().strip("*").lower() in YES}
+            if s.get("description"):
+                p["description"] = s.pop("description")
+            params.append(p)
+        given = {p["name"] for p in params if p["in"] == "path"}
+        for var in re.findall(r"\{(\w+)\}", a["path"]):
+            if var not in given:
+                self.issue(a, "{%s} has no row in a \u8def\u5f84\u53c2\u6570 table" % var)
+                params.append({"name": var, "in": "path", "required": True, "schema": {"type": "string"}})
+        for var in given - set(re.findall(r"\{(\w+)\}", a["path"])):
+            self.issue(a, "\u8def\u5f84\u53c2\u6570 %s is not in the path" % var)
+        desc = (["\u5173\u8054\u9700\u6c42\uff1a" + row["\u5173\u8054\u9700\u6c42"]] if row.get("\u5173\u8054\u9700\u6c42") else []) + a["notes"]
+        codes = sorted(set(a["codes"]))
+        if codes:
+            desc.append("\u9519\u8bef\u7801\uff1a\n\n" + "\n".join(("- %d %s" % (c, self.codes.get(c, ""))).rstrip() for c in codes))
+        folder = "/".join(x.replace("\\", "\\\\").replace("/", "\\/") for x in (self.feature, caller) if x)
+        op = {"summary": a["name"], "tags": [caller or self.feature], "x-apifox-folder": folder}
+        if desc:
+            op["description"] = "\n\n".join(desc)
+        if params:
+            op["parameters"] = params
+        if a["body"]:
+            s = self.payload(a["body"], a)
+            if s is not None:
+                own = self.own_types(java_type(a["body"][0]) or ("", [])) if a["body"][0] else []
+                fields = a["body"][1] or [f for t in own for f in self.named.get(t, [])]
+                upload = any("MultipartFile" in f["type"] for f in fields)
+                op["requestBody"] = {"required": True, "content": {
+                    "multipart/form-data" if upload else "application/json": {"schema": s}}}
+                if a["body"][2]:
+                    op["requestBody"]["description"] = a["body"][2]
+        resp = {"description": "\u6210\u529f"}
+        if a["resp"]:
+            s = self.payload(a["resp"], a)
+            if a["resp"][2]:
+                resp["description"] = a["resp"][2]
+            if s is not None:
+                resp["content"] = {"application/json": {"schema": s}}
+        else:
+            self.issue(a, "no \u54cd\u5e94 line, e.g. '\u54cd\u5e94 `Result<Void>`\u3002'")
+        op["responses"] = {"200": resp}
+        return op
+
+    def build(self):
+        if not self.apis:
+            self.issue("\u63a5\u53e3\u8bbe\u8ba1", "no API heading like '#### \u521b\u5efa\u4f18\u60e0\u5238 `POST /api/v1/coupons`'")
+        seen = set()
+        for a in self.apis:
+            key = (a["method"], a["path"])
+            if key in seen:
+                self.issue(a, "described twice")
+            seen.add(key)
+            if self.listed and key not in self.listed:
+                self.issue(a, "missing from the \u63a5\u53e3\u6e05\u5355 table")
+        for m, p in self.listed:
+            if (m, p) not in seen:
+                self.issue("%s %s" % (m.upper(), p), "listed in \u63a5\u53e3\u6e05\u5355 but has no heading in \u63a5\u53e3\u8be6\u60c5")
+        schemas = {name: self.object_schema(fields, {}, name) for name, fields in list(self.named.items())}
+        paths, tags = {}, []
+        for a in self.apis:
+            if a["modified"]:
+                continue
+            op = self.operation(a)
+            paths.setdefault(a["path"], {})[a["method"]] = op
+            tags += [t for t in op["tags"] if t not in tags]
+        skipped = [self.where(a) for a in self.apis if a["modified"]]
+        intro = ["\u7531\u8be6\u7ec6\u8bbe\u8ba1\u300a%s\u300b\u7684\u201c\u63a5\u53e3\u8bbe\u8ba1\u201d\u5bfc\u51fa\u3002\u63a5\u53e3\u7ea6\u5b9a\u4ee5\u8bc4\u5ba1\u786e\u8ba4\u7684 Word \u4e3a\u51c6\uff0c\u6807\u6709\u3010\u5047\u8bbe\u3011\u3010\u5f85\u786e\u8ba4\u3011\u7684\u5185\u5bb9"
+                 "\u53ef\u80fd\u968f\u8bc4\u5ba1\u7b54\u590d\u53d8\u5316\u3002" % self.stem] + self.notes
+        if self.codes:
+            intro.append("\u9519\u8bef\u7801\uff1a\n\n" + "\n".join(("- %d %s" % kv).rstrip() for kv in sorted(self.codes.items())))
+        if skipped:
+            intro.append("\u672a\u5bfc\u51fa\u7684\u4fee\u6539\u63a5\u53e3\uff08\u8bbe\u8ba1\u91cc\u53ea\u5217\u4e86\u65b0\u589e\u5b57\u6bb5\uff0c\u5bfc\u5165\u4f1a\u8986\u76d6\u5df2\u6709\u7684\u5b8c\u6574\u5b9a\u4e49\uff0c\u8bf7\u5728 Apifox \u6216 Postman \u91cc"
+                         "\u624b\u5de5\u8865\u4e0a\uff09\uff1a\n\n" + "\n".join("- " + x for x in skipped))
+        doc = {"openapi": "3.0.3", "info": {"title": self.title, "version": self.version, "description": "\n\n".join(intro)},
+               "tags": [{"name": t} for t in tags], "paths": paths}
+        if schemas:
+            doc["components"] = {"schemas": schemas}
+        return doc
+
+    def report(self):
+        skipped = [self.where(a) for a in self.apis if a["modified"]]
+        note = (", %d \u4fee\u6539 not exported (%s)" % (len(skipped), ", ".join(skipped))) if skipped else ""
+        print("[api] %d APIs: %d to export%s%s" % (len(self.apis), len(self.apis) - len(skipped), note,
+                                                    "" if self.issues else " -- ok"))
+        for x in self.issues:
+            print("  ! api " + x)
+
+
+def api_export(md, stem, out_dir=None):
+    """Check the API design; with out_dir, also write <stem>.openapi.json there."""
+    api = ApiDesign(md, stem)
+    if not api.found:
+        if out_dir:
+            print("[api] no \u63a5\u53e3\u8bbe\u8ba1 section, nothing to export")
+        return
+    api.report()
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, stem + ".openapi.json")
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(api.doc, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        n = sum(len(v) for v in api.doc["paths"].values())
+        print("wrote %s  (%d APIs, %d schemas)" % (slash(path), n, len(api.doc.get("components", {}).get("schemas", {}))))
 
 
 # --------------------------------------------------------------------------- reading
@@ -756,6 +1384,9 @@ def main():
     ap.add_argument("--no-toc", action="store_true")
     ap.add_argument("--mmdc", help="Mermaid CLI command or path")
     ap.add_argument("--chrome", help="Chrome/Edge executable for the Mermaid CLI")
+    ap.add_argument("--openapi", action="store_true",
+                    help="design docs: also write <name>.openapi.json (OpenAPI 3) from section 2.3 for Apifox or "
+                         "Postman; a .docx input is read first")
     args = ap.parse_args()
     files, failed = [], False
     for i in args.inputs:
@@ -769,13 +1400,23 @@ def main():
     try:
         for f in files:
             stem, ext = os.path.splitext(os.path.basename(f))
-            if args.read:
+            if args.read or (args.openapi and ext.lower() == ".docx"):
                 if ext.lower() != ".docx":
                     print(f"skip {f}: --read takes .docx (.pdf \u2192 read it directly, .doc/.wps \u2192 save as .docx)")
                     failed = True
                     continue
-                out_dir = args.out_dir or os.path.join(tempfile.gettempdir(), "md2docx-" + re.sub(r"[^\w.-]", "_", stem))
-                report(*read_docx(f, out_dir))
+                md_path = None
+                if args.read:
+                    out_dir = args.out_dir or os.path.join(tempfile.gettempdir(), "md2docx-" + re.sub(r"[^\w.-]", "_", stem))
+                    md_path, images = read_docx(f, out_dir)
+                    report(md_path, images)
+                if args.openapi:
+                    if md_path:
+                        md = open(md_path, encoding="utf-8").read()
+                    else:
+                        with tempfile.TemporaryDirectory() as td:
+                            md = open(read_docx(f, td)[0], encoding="utf-8").read()
+                    api_export(md, stem, args.out_dir or os.path.dirname(os.path.abspath(f)))
                 continue
             out_dir = args.out_dir or os.path.dirname(os.path.abspath(f))
             os.makedirs(out_dir, exist_ok=True)
@@ -786,8 +1427,10 @@ def main():
                 print(f"FAIL {f}: cannot write {e.filename}: close it in Word first")
                 failed = True
                 continue
-            trace_check(md)
+            design = trace_check(md)
             print(f"wrote {slash(out)}" + (f", diagrams {ok}/{n}" if n else ""))
+            if design or args.openapi:
+                api_export(md, stem, out_dir if args.openapi else None)
     except BrokenPipeError:  # output piped into `head`; files are already written
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     sys.exit(1 if failed else 0)

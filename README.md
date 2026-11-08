@@ -26,11 +26,12 @@ Claude：拆出 11 条需求、19 条验收标准；有 12 个问题需要运营
 - **遵循现有代码约定**：先读项目里有代表性的代码，沿用现有的统一返回类、路径风格、表前缀、主键策略和审计字段。
 - **直接交付 Word**：只输出 `.docx`。Claude 写的 Markdown 只是临时草稿。Word 文件本身就是母版：`md2docx.py --read` 能把它无损还原成 Markdown，流程图也能还原，因为图的源码存在图片的替代文字里。
 - **评审后更新**：把业务方改过、批注过的 Word 直接给它，修订显示为 `[+新增+]` / `[-删除-]`，批注显示为 `[批注 作者：内容]`。或者直接告诉它“Q-03 选 B”。它会更新所有受影响的章节，保留问题记录和修订历史，另存为新版本号。
-- **自动检查**：转 Word 时会检查每条需求是否都有验收标准、是否出现在技术设计里、编号是否都有定义、已确认的问题是否还残留【假设】。
+- **自动检查**：转 Word 时会检查每条需求是否都有验收标准、是否出现在技术设计里、编号是否都有定义、已确认的问题是否还残留【假设】，以及接口详情是否都写成了能导出的表格。
+- **导出接口约定**：`md2docx.py --openapi` 把 2.3 接口设计导出成 OpenAPI 3 文件，导入 Apifox 或 Postman 就有 Mock。前端不用等后端，测试可以提前写用例。字段类型、取值范围、长度、枚举和时间格式都会带过去。修改已有接口的部分只列了新增字段，所以不导出，以免覆盖工具里已有的完整定义。
 
 只需要两个文件：`SKILL.md` 和 `md2docx.py`，方便复制到不能访问 GitHub 的电脑上。
 
-示例：[`优惠券需求说明书`](examples/demo-shop/docs/requirements) → [`优惠券-详细设计.docx`](examples/demo-shop/docs/design/优惠券-详细设计.docx)
+示例：[`优惠券需求说明书`](examples/demo-shop/docs/requirements) → [`优惠券-详细设计.docx`](examples/demo-shop/docs/design/优惠券-详细设计.docx) → [`优惠券-详细设计.openapi.json`](examples/demo-shop/docs/design/优惠券-详细设计.openapi.json)
 
 ## spring-delivery-docs：代码 → 交付文档
 
@@ -130,6 +131,7 @@ $env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx -y @mermaid-js/mermaid-cli@11.4.2 --vers
 - “需求文档是 C:\Users\me\Downloads\迭代9\需求说明书.docx，出个详细设计，放到同一个目录”（写上文件路径；docx、pdf、md 都可以；不指定位置时默认写到项目的 `docs/design/`）
 - “评审结果：Q-01 选 A，Q-03 选 B”（更新设计）
 - “对照详细设计看看开发进度”
+- “把详细设计里的接口导出来，前端要在 Apifox 里 Mock”
 
 详细设计只交付 Word。交付文档默认同时输出 Markdown 和 Word 两份。Word 版包括：
 
@@ -145,6 +147,7 @@ $env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx -y @mermaid-js/mermaid-cli@11.4.2 --vers
 M=skills/spring-detailed-design/md2docx.py        # 与 spring-delivery-docs/scripts/md2docx.py 完全相同
 python3 $M 详细设计.md --template 公司模板.docx     # Markdown → Word；设计文档会顺带做需求追溯检查
 python3 $M --read 评审回来的.docx                  # Word → Markdown，含修订、批注和流程图源码，打印大纲
+python3 $M --openapi 详细设计.docx                 # 接口设计 → 详细设计.openapi.json，导入 Apifox / Postman
 python3 skills/spring-delivery-docs/scripts/scan_spring.py <项目目录>           # 扫描代码，打印摘要和 JSON 路径
 python3 skills/spring-delivery-docs/scripts/check_docs.py <JSON 路径> docs/delivery  # 交付文档覆盖率 + 泄密检查
 ```

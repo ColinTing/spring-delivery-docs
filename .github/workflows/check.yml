@@ -19,6 +19,9 @@ jobs:
       - name: Scripts compile
         run: python -m py_compile skills/spring-delivery-docs/scripts/*.py skills/spring-detailed-design/*.py tools/*.py
 
+      - name: md2docx.py is pure ASCII (it gets pasted onto machines with other default encodings)
+        run: python -c "import sys; open(sys.argv[1], 'rb').read().decode('ascii')" skills/spring-delivery-docs/scripts/md2docx.py
+
       - name: Install python-docx (the only dependency)
         run: python -m pip install python-docx
 
@@ -52,3 +55,13 @@ jobs:
           print("not lossless:", bad or "none")
           sys.exit(1 if bad else 0)
           EOF
+
+      - name: spring-detailed-design, API design -> OpenAPI
+        run: |
+          M=skills/spring-detailed-design/md2docx.py
+          D=examples/demo-shop/docs/design
+          python $M --openapi /tmp/rt-docx/优惠券-详细设计.docx --out-dir /tmp/oa | tee /tmp/oa.txt  # the Word file from the step above
+          grep -qE "^\[api\] .* -- ok$" /tmp/oa.txt                                      # every API in 2.3 can be read
+          diff -u "$D/优惠券-详细设计.openapi.json" /tmp/oa/优惠券-详细设计.openapi.json  # the committed example is current
+          python -m pip install -q openapi-spec-validator
+          openapi-spec-validator /tmp/oa/优惠券-详细设计.openapi.json

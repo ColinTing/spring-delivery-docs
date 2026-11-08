@@ -1,0 +1,978 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "优惠券 详细设计",
+    "version": "v0.1（评审稿）",
+    "description": "由详细设计《优惠券-详细设计》的“接口设计”导出。接口约定以评审确认的 Word 为准，标有【假设】【待确认】的内容可能随评审答复变化。\n\n后台接口统一使用 `/api/v1/admin/` 前缀，由网关鉴权【假设，见 Q-12】。用户端接口通过请求头 `X-User-Id` 识别用户。\n\n所有接口的响应都包在 `Result<T>` 里，分页数据为 `PageResult<T>`。时间字段格式为 `yyyy-MM-dd HH:mm:ss`，与 `vo/UserVO.java` 中的 `@JsonFormat` 一致。\n\n错误码：\n\n- 3001 优惠券参数不合法（如满减金额不小于门槛）\n- 3002 优惠券不存在\n- 3003 优惠券已失效（停用、未开始或已结束）\n- 3004 您已领取过该优惠券\n- 3005 优惠券已领完\n- 3006 优惠券不可用，请重新选择\n- 3007 未达到优惠券使用门槛\n\n未导出的修改接口（设计里只列了新增字段，导入会覆盖已有的完整定义，请在 Apifox 或 Postman 里手工补上）：\n\n- POST /api/v1/orders"
+  },
+  "tags": [
+    {
+      "name": "管理后台"
+    },
+    {
+      "name": "用户端"
+    },
+    {
+      "name": "用户端下单页"
+    }
+  ],
+  "paths": {
+    "/api/v1/admin/coupons": {
+      "post": {
+        "summary": "创建优惠券",
+        "tags": [
+          "管理后台"
+        ],
+        "x-apifox-folder": "优惠券/管理后台",
+        "description": "关联需求：R-01\n\n类型相关的交叉校验在 Service 中完成，失败返回 3001。\n\n错误码：\n\n- 3001 优惠券参数不合法（如满减金额不小于门槛）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CouponCreateDTO"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "data 为券 ID。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "example": 0,
+                      "description": "状态码，0 表示成功，其他为错误码"
+                    },
+                    "msg": {
+                      "type": "string",
+                      "example": "提示信息",
+                      "description": "提示信息"
+                    },
+                    "data": {
+                      "type": "integer",
+                      "format": "int64",
+                      "example": 100,
+                      "description": "业务数据"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "优惠券列表",
+        "tags": [
+          "管理后台"
+        ],
+        "x-apifox-folder": "优惠券/管理后台",
+        "description": "关联需求：R-02, R-11",
+        "parameters": [
+          {
+            "name": "pageNum",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1,
+              "example": 1
+            },
+            "required": false,
+            "description": "页码"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 10,
+              "example": 10
+            },
+            "required": false,
+            "description": "每页条数"
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "券名称"
+            },
+            "required": false,
+            "description": "券名称，模糊匹配"
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "NOT_STARTED",
+                "ONGOING",
+                "ENDED",
+                "DISABLED"
+              ],
+              "x-apifox-enum": [
+                {
+                  "value": "NOT_STARTED",
+                  "name": "",
+                  "description": "未开始"
+                },
+                {
+                  "value": "ONGOING",
+                  "name": "",
+                  "description": "进行中"
+                },
+                {
+                  "value": "ENDED",
+                  "name": "",
+                  "description": "已结束"
+                },
+                {
+                  "value": "DISABLED",
+                  "name": "",
+                  "description": "已停用"
+                }
+              ],
+              "example": "NOT_STARTED"
+            },
+            "required": false,
+            "description": "运营状态；校验：NOT_STARTED 未开始 / ONGOING 进行中 / ENDED 已结束 / DISABLED 已停用"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "example": 0,
+                      "description": "状态码，0 表示成功，其他为错误码"
+                    },
+                    "msg": {
+                      "type": "string",
+                      "example": "提示信息",
+                      "description": "提示信息"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "format": "int64",
+                          "example": 100,
+                          "description": "总条数"
+                        },
+                        "records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/AdminCouponVO"
+                          },
+                          "description": "当前页数据"
+                        }
+                      },
+                      "description": "业务数据"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/coupons/{id}/disable": {
+      "put": {
+        "summary": "停用优惠券",
+        "tags": [
+          "管理后台"
+        ],
+        "x-apifox-folder": "优惠券/管理后台",
+        "description": "关联需求：R-03\n\n幂等：对已停用的券再次停用返回成功。\n\n错误码：\n\n- 3002 优惠券不存在",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "example": 100
+            },
+            "required": true,
+            "description": "券 ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "example": 0,
+                      "description": "状态码，0 表示成功，其他为错误码"
+                    },
+                    "msg": {
+                      "type": "string",
+                      "example": "提示信息",
+                      "description": "提示信息"
+                    },
+                    "data": {
+                      "type": "object",
+                      "nullable": true,
+                      "description": "业务数据"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/coupons/available": {
+      "get": {
+        "summary": "可领取的券",
+        "tags": [
+          "用户端"
+        ],
+        "x-apifox-folder": "优惠券/用户端",
+        "description": "关联需求：R-05, R-06\n\n返回状态为启用、在有效期内、`received_count < total_count` 的券，按结束时间正序。",
+        "parameters": [
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "example": 100
+            },
+            "required": false,
+            "description": "当前用户 ID，未登录时不传，不返回领取状态"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "example": 0,
+                      "description": "状态码，0 表示成功，其他为错误码"
+                    },
+                    "msg": {
+                      "type": "string",
+                      "example": "提示信息",
+                      "description": "提示信息"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CouponVO"
+                      },
+                      "description": "业务数据"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/coupons/{id}/receive": {
+      "post": {
+        "summary": "领取优惠券",
+        "tags": [
+          "用户端"
+        ],
+        "x-apifox-folder": "优惠券/用户端",
+        "description": "关联需求：R-04\n\n处理逻辑见 2.4.1。\n\n错误码：\n\n- 3002 优惠券不存在\n- 3003 优惠券已失效（停用、未开始或已结束）\n- 3004 您已领取过该优惠券\n- 3005 优惠券已领完",
+        "parameters": [
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "example": 100
+            },
+            "required": true,
+            "description": "当前用户 ID"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "example": 100
+            },
+            "required": true,
+            "description": "券 ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "data 为用户券 ID。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "example": 0,
+                      "description": "状态码，0 表示成功，其他为错误码"
+                    },
+                    "msg": {
+                      "type": "string",
+                      "example": "提示信息",
+                      "description": "提示信息"
+                    },
+                    "data": {
+                      "type": "integer",
+                      "format": "int64",
+                      "example": 100,
+                      "description": "业务数据"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/user-coupons": {
+      "get": {
+        "summary": "我的优惠券",
+        "tags": [
+          "用户端"
+        ],
+        "x-apifox-folder": "优惠券/用户端",
+        "description": "关联需求：R-09",
+        "parameters": [
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "example": 100
+            },
+            "required": true,
+            "description": "当前用户 ID"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "UNUSED",
+                "USED",
+                "EXPIRED"
+              ],
+              "x-apifox-enum": [
+                {
+                  "value": "UNUSED",
+                  "name": "",
+                  "description": "未使用"
+                },
+                {
+                  "value": "USED",
+                  "name": "",
+                  "description": "已使用"
+                },
+                {
+                  "value": "EXPIRED",
+                  "name": "",
+                  "description": "已过期"
+                }
+              ],
+              "example": "UNUSED"
+            },
+            "required": true,
+            "description": "页签；校验：UNUSED 未使用 / USED 已使用 / EXPIRED 已过期"
+          },
+          {
+            "name": "pageNum",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1,
+              "example": 1
+            },
+            "required": false,
+            "description": "页码"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 10,
+              "example": 10
+            },
+            "required": false,
+            "description": "每页条数"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "example": 0,
+                      "description": "状态码，0 表示成功，其他为错误码"
+                    },
+                    "msg": {
+                      "type": "string",
+                      "example": "提示信息",
+                      "description": "提示信息"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "format": "int64",
+                          "example": 100,
+                          "description": "总条数"
+                        },
+                        "records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/UserCouponVO"
+                          },
+                          "description": "当前页数据"
+                        }
+                      },
+                      "description": "业务数据"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/user-coupons/usable": {
+      "get": {
+        "summary": "本单可用的券",
+        "tags": [
+          "用户端下单页"
+        ],
+        "x-apifox-folder": "优惠券/用户端下单页",
+        "description": "关联需求：R-07\n\n返回未使用、在有效期内、门槛 ≤ amount 的券，每张带上 `discountAmount`（按本单金额计算的优惠），按优惠金额倒序。",
+        "parameters": [
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "example": 100
+            },
+            "required": true,
+            "description": "当前用户 ID"
+          },
+          {
+            "name": "amount",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "example": 100
+            },
+            "required": true,
+            "description": "本单商品金额"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "字段同“我的优惠券”。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "example": 0,
+                      "description": "状态码，0 表示成功，其他为错误码"
+                    },
+                    "msg": {
+                      "type": "string",
+                      "example": "提示信息",
+                      "description": "提示信息"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UserCouponVO"
+                      },
+                      "description": "业务数据"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CouponCreateDTO": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "example": "券名称",
+            "description": "券名称；校验：`@NotBlank @Size(max=30)`"
+          },
+          "type": {
+            "type": "integer",
+            "format": "int32",
+            "enum": [
+              1,
+              2
+            ],
+            "x-apifox-enum": [
+              {
+                "value": 1,
+                "name": "",
+                "description": "满减券"
+              },
+              {
+                "value": 2,
+                "name": "",
+                "description": "折扣券"
+              }
+            ],
+            "example": 1,
+            "description": "券类型；校验：1 满减券，2 折扣券"
+          },
+          "reduceAmount": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 9999.99,
+            "example": 100,
+            "description": "减免金额；满减券必填；校验：0.01–9999.99"
+          },
+          "discount": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 9.9,
+            "multipleOf": 0.1,
+            "example": 1,
+            "description": "折扣；折扣券必填；校验：0.1–9.9，1 位小数"
+          },
+          "maxDiscountAmount": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 9999.99,
+            "example": 100,
+            "description": "最高优惠金额；校验：0.01–9999.99"
+          },
+          "thresholdAmount": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 99999.99,
+            "example": 100,
+            "description": "门槛；校验：0–99999.99"
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 1000000,
+            "example": 100,
+            "description": "发放总量；校验：1–1000000"
+          },
+          "startTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "开始时间；校验：`yyyy-MM-dd HH:mm:ss`"
+          },
+          "endTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "结束时间；校验：`yyyy-MM-dd HH:mm:ss`，晚于 startTime 和当前时间"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "thresholdAmount",
+          "totalCount",
+          "startTime",
+          "endTime"
+        ]
+      },
+      "AdminCouponVO": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 100,
+            "description": "券 ID"
+          },
+          "name": {
+            "type": "string",
+            "example": "券名称",
+            "description": "券名称"
+          },
+          "type": {
+            "type": "integer",
+            "format": "int32",
+            "enum": [
+              1,
+              2
+            ],
+            "x-apifox-enum": [
+              {
+                "value": 1,
+                "name": "",
+                "description": "满减券"
+              },
+              {
+                "value": 2,
+                "name": "",
+                "description": "折扣券"
+              }
+            ],
+            "example": 1,
+            "description": "1 满减券，2 折扣券"
+          },
+          "thresholdAmount": {
+            "type": "number",
+            "example": 0,
+            "description": "使用门槛，0 表示无门槛"
+          },
+          "reduceAmount": {
+            "type": "number",
+            "example": 100,
+            "nullable": true,
+            "description": "减免金额，满减券有值，折扣券为空"
+          },
+          "discount": {
+            "type": "number",
+            "example": 100,
+            "nullable": true,
+            "description": "折扣，折扣券有值，满减券为空"
+          },
+          "maxDiscountAmount": {
+            "type": "number",
+            "example": 100,
+            "nullable": true,
+            "description": "最高优惠金额，为空表示不封顶"
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32",
+            "example": 100,
+            "description": "发放总量"
+          },
+          "receivedCount": {
+            "type": "integer",
+            "format": "int32",
+            "example": 100,
+            "description": "已领取数量"
+          },
+          "usedCount": {
+            "type": "integer",
+            "format": "int32",
+            "example": 100,
+            "description": "已使用数量"
+          },
+          "startTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "有效期开始"
+          },
+          "endTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "有效期结束"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "enum": [
+              1,
+              0
+            ],
+            "x-apifox-enum": [
+              {
+                "value": 1,
+                "name": "",
+                "description": "启用"
+              },
+              {
+                "value": 0,
+                "name": "",
+                "description": "停用"
+              }
+            ],
+            "example": 1,
+            "description": "1 启用，0 停用"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "ONGOING",
+              "ENDED",
+              "DISABLED"
+            ],
+            "x-apifox-enum": [
+              {
+                "value": "NOT_STARTED",
+                "name": "",
+                "description": "未开始"
+              },
+              {
+                "value": "ONGOING",
+                "name": "",
+                "description": "进行中"
+              },
+              {
+                "value": "ENDED",
+                "name": "",
+                "description": "已结束"
+              },
+              {
+                "value": "DISABLED",
+                "name": "",
+                "description": "已停用"
+              }
+            ],
+            "example": "NOT_STARTED",
+            "description": "运营状态：NOT_STARTED 未开始 / ONGOING 进行中 / ENDED 已结束 / DISABLED 已停用；由 status 与当前时间计算"
+          },
+          "displayText": {
+            "type": "string",
+            "example": "满100减10",
+            "description": "优惠内容，如“满100减10”"
+          },
+          "createTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "创建时间"
+          }
+        }
+      },
+      "CouponVO": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 100,
+            "description": "券 ID"
+          },
+          "name": {
+            "type": "string",
+            "example": "券名称",
+            "description": "券名称"
+          },
+          "type": {
+            "type": "integer",
+            "format": "int32",
+            "enum": [
+              1,
+              2
+            ],
+            "x-apifox-enum": [
+              {
+                "value": 1,
+                "name": "",
+                "description": "满减券"
+              },
+              {
+                "value": 2,
+                "name": "",
+                "description": "折扣券"
+              }
+            ],
+            "example": 1,
+            "description": "1 满减券，2 折扣券"
+          },
+          "displayText": {
+            "type": "string",
+            "example": "满100减10",
+            "description": "优惠内容，如“满100减10”"
+          },
+          "thresholdAmount": {
+            "type": "number",
+            "example": 0,
+            "description": "使用门槛，0 表示无门槛"
+          },
+          "startTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "有效期开始"
+          },
+          "endTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "有效期结束"
+          },
+          "received": {
+            "type": "boolean",
+            "example": true,
+            "nullable": true,
+            "description": "当前用户是否已领取，未登录时为空"
+          }
+        }
+      },
+      "UserCouponVO": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 100,
+            "description": "用户券 ID"
+          },
+          "couponId": {
+            "type": "integer",
+            "format": "int64",
+            "example": 100,
+            "description": "优惠券 ID"
+          },
+          "name": {
+            "type": "string",
+            "example": "券名称",
+            "description": "券名称"
+          },
+          "displayText": {
+            "type": "string",
+            "example": "满100减10",
+            "description": "优惠内容，如“满100减10”"
+          },
+          "thresholdAmount": {
+            "type": "number",
+            "example": 0,
+            "description": "使用门槛，0 表示无门槛"
+          },
+          "startTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "有效期开始"
+          },
+          "endTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "description": "有效期结束"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "UNUSED",
+              "USED",
+              "EXPIRED"
+            ],
+            "x-apifox-enum": [
+              {
+                "value": "UNUSED",
+                "name": "",
+                "description": "未使用"
+              },
+              {
+                "value": "USED",
+                "name": "",
+                "description": "已使用"
+              },
+              {
+                "value": "EXPIRED",
+                "name": "",
+                "description": "已过期"
+              }
+            ],
+            "example": "UNUSED",
+            "description": "UNUSED 未使用 / USED 已使用 / EXPIRED 已过期"
+          },
+          "orderId": {
+            "type": "integer",
+            "format": "int64",
+            "example": 100,
+            "nullable": true,
+            "description": "使用该券的订单 ID，未使用时为空"
+          },
+          "useTime": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+            "example": "2026-12-10 09:30:00",
+            "x-apifox-mock": "@datetime('yyyy-MM-dd HH:mm:ss')",
+            "nullable": true,
+            "description": "使用时间，未使用时为空"
+          },
+          "discountAmount": {
+            "type": "number",
+            "example": 100,
+            "nullable": true,
+            "description": "按本单金额计算的优惠金额，只在“本单可用的券”中有值，其余为空"
+          }
+        }
+      }
+    }
+  }
+}
