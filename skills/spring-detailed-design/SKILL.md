@@ -108,7 +108,7 @@ python <skill_dir>/md2docx.py <draft.md> --out-dir <target dir> [--template 公�
 Target dir: where the user asked for it (often the folder holding the requirement doc), else `docs/design/` in the project. Write nothing else into the source tree. Read the output:
 
 - `[check] … -- ok`: traceability holds. Every `!` line is a defect: an R without an AC, an R missing from the technical part, an id used but never defined, or a 【假设】 left for an answered question. Fix the draft and convert again until the line ends with `ok`.
-- `[api] … -- ok`: section 2.3 can be exported as an API contract. Every `! api` line names an API and what the export cannot read: parameters written in a sentence, a class with no field table, a path variable with no row, a time field without a format. Fix the draft and convert again. APIs marked （修改） are counted but never exported.
+- `[api] … -- ok`: section 2.3 can be exported as an API contract. Every `! api` line names an API and what the export cannot read: parameters written in a sentence, a class with no field table, a path variable with no row, a time field without a format. Fix the draft and convert again. Existing APIs, marked （修改） or （不变） in the 接口清单 or their heading, are listed but never exported.
 - `python-docx is required`: give the user the install command it printed, and stop there. Do not hand-build a .docx some other way.
 - `no Mermaid renderer` / `diagrams 0/N`: the .docx is still produced, with the diagram source kept. Rendering needs Node.js, but no global install: the script falls back to `npx` (installs into the user's npm cache, no admin rights; the first run downloads ~300 MB). To warm it up once: `npx -y @mermaid-js/mermaid-cli@11.4.2 --version` with `PUPPETEER_SKIP_DOWNLOAD=1` set (PowerShell: `$env:PUPPETEER_SKIP_DOWNLOAD = "1"; npx ...`). It uses the installed Chrome/Edge. Never suggest running npm as administrator.
 - `cannot write … close it in Word first`: the user has the file open.
@@ -144,14 +144,28 @@ When the user wants the APIs in Apifox or Postman, wants mocks for the frontend 
 python <skill_dir>/md2docx.py --openapi <design.docx> [--out-dir DIR]
 ```
 
-It writes `<name>.openapi.json` (OpenAPI 3.0) next to the .docx and prints the same `[api]` check as the conversion. If there are `! api` findings, fix the design (as in "Updating after review") and export again. Never edit the JSON by hand: the Word document stays the master, and the JSON is regenerated from it after every review. Then tell the user:
+It writes `<name>.openapi.json` (OpenAPI 3.0) next to the .docx and prints the same `[api]` check as the conversion. If nothing can be exported it writes no file and exits with an error.
+
+**If the `[api]` line does not end with `ok`, the file is incomplete. Do not hand it over: upgrade the design first** (next section), then export again. Never edit the JSON by hand: the Word document stays the master, and the JSON is regenerated from it after every review.
+
+When the line ends with `ok`, tell the user:
 
 - **Apifox**: 导入数据 → OpenAPI/Swagger, then choose the file. The APIs land in folders `{功能名}/{调用方}`, and the mock data follows the field types, ranges, lengths, enums and time formats, so the frontend can start before the backend exists.
 - **Postman**: Import the file. Postman fills request bodies with placeholders such as `<string>` unless "Parameter generation" in the import settings is set to Example.
-- **Not exported**: the APIs marked （修改）. The design lists only their new fields, and importing them would overwrite the complete definition already in the tool, so name the fields to add by hand.
+- **Not exported**: the existing APIs, marked （修改） or （不变）. The design describes only what changes, and importing them would overwrite the complete definition already in the tool, so name the fields to add by hand.
 - **Still open**: the open questions that affect the APIs (Q ids cited by 【假设】 in 2.3). Until they are answered the contract can change; export and import again after the next review.
 
 The export runs locally. As with the design itself, do not upload it to any online service; importing it into the team's tool is the user's step.
+
+### Upgrading a design written before this format
+
+Designs made with an earlier version of this skill describe APIs in paragraphs (`` `GET /x`（新增） `` followed by sentences), with one 请求参数 table and the response class only named. The export reads what it can and lists the rest as `! api` findings. Upgrade section 2.3.2 once, then export again:
+
+1. `python <skill_dir>/md2docx.py --read <design.docx>` and work on the Markdown it writes.
+2. Rewrite **only 2.3.2**, one API at a time, in the template's format: a heading `` #### 名称 `METHOD /path` `` (end it with （修改） or （不变） for an existing API, which is not exported), then the 请求头 / 路径参数 / 查询参数 / 请求体 tables with one parameter per row (`page/size` becomes two rows), then the 响应 line and its field table. Keep the old sentences about logic as notes under the heading.
+3. Fill in what the old text only refers to. '同条件' or '同上': repeat the table. A response class that is only named, such as `QueryXxxRspVO`（新增 province 字段）: find it with `git grep -n "class QueryXxxRspVO" -- "*.java" | head`, read that file, and list every field with its Java type, writing 新增 in 说明 for the new ones. The response wrapper and the page class (`Result`, `R`, `PageInfo`, `IPage`, …): add `结构` tables with the field names from the code, and write the full type on the 响应 line, e.g. `` 响应 `Result<PageInfo<QueryXxxRspVO>>`： ``. If the project's code is not in the current directory, ask the user for its path; never invent fields. Anything you cannot confirm is 【待确认】.
+4. Change nothing outside 2.3.2. Add a row to 修订记录 (`接口详情改为表格，用于导出接口`) and save as the next version, e.g. `{功能名}-详细设计-v1.1.md`, so the reviewed .docx is not overwritten.
+5. Convert, then export from the new .docx. Repeat until the `[api]` line ends with `ok`, and tell the user that only the API tables changed, so the business side does not need to review again.
 
 ## Checking implementation progress
 

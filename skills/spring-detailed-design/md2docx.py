@@ -569,13 +569,16 @@ def trace_check(md):
 # --------------------------------------------------------------------------- OpenAPI export
 
 API_HEAD = re.compile(r"^(.*?)\s*`(GET|POST|PUT|DELETE|PATCH)\s+(/[^`\s]*)`(.*)$", re.I)
-API_LABEL = re.compile(r"^\**(\u8bf7\u6c42\u5934|\u8def\u5f84\u53c2\u6570|\u67e5\u8be2\u53c2\u6570|\u8bf7\u6c42\u4f53|\u54cd\u5e94|\u7ed3\u6784)\**\s*(?:`([^`]+)`)?\s*"
-                       r"(?:[\uff08(][^\uff09)]*[\uff09)])?\s*(?:[\uff1a:\uff0c,\u3002]\s*(.*)|$)")
-API_IN = {"\u8bf7\u6c42\u5934": "header", "\u8def\u5f84\u53c2\u6570": "path", "\u67e5\u8be2\u53c2\u6570": "query"}
+API_DECL = re.compile(r"\**`?(GET|POST|PUT|DELETE|PATCH)\s+(/[^`\s\uff08(\uff1a:\uff0c,\uff1b;]*)`?\**", re.I)
+API_LABEL = re.compile(r"^\**(\u8bf7\u6c42\u5934|\u8def\u5f84\u53c2\u6570|\u67e5\u8be2\u53c2\u6570|\u8bf7\u6c42\u4f53|\u8bf7\u6c42\u53c2\u6570|\u5165\u53c2|\u54cd\u5e94|\u54cd\u5e94\u53c2\u6570|\u8fd4\u56de\u53c2\u6570|\u54cd\u5e94\u5b57\u6bb5|\u8fd4\u56de\u5b57\u6bb5|\u51fa\u53c2|"
+                       r"\u8fd4\u56de\u503c|\u7ed3\u6784)\**\s*(?:`([^`]+)`)?\s*(?:[\uff08(]([^\uff09)]*)[\uff09)])?\s*(?:[\uff1a:\uff0c,\u3002]\s*(.*)|$)")
+LABEL_KIND = {"\u8bf7\u6c42\u5934": "header", "\u8def\u5f84\u53c2\u6570": "path", "\u67e5\u8be2\u53c2\u6570": "query", "\u8bf7\u6c42\u4f53": "body", "\u8bf7\u6c42\u53c2\u6570": "params",
+              "\u5165\u53c2": "params", "\u7ed3\u6784": "struct"}  # every other label introduces the response
+API_IN = ("header", "path", "query")
 API_COLUMNS = {"name": ("\u5b57\u6bb5", "\u53c2\u6570", "\u53c2\u6570\u540d", "\u5b57\u6bb5\u540d", "\u5c5e\u6027"), "type": ("\u7c7b\u578b",),
                "required": ("\u5fc5\u586b", "\u662f\u5426\u5fc5\u586b"), "rule": ("\u6821\u9a8c", "\u6821\u9a8c\u89c4\u5219", "\u7ea6\u675f", "\u53d6\u503c"),
                "default": ("\u9ed8\u8ba4\u503c",), "desc": ("\u8bf4\u660e", "\u63cf\u8ff0", "\u542b\u4e49", "\u5907\u6ce8"), "example": ("\u793a\u4f8b", "\u793a\u4f8b\u503c")}
-MODIFIED = re.compile(r"[\uff08(]\**\u4fee\u6539|\*\*\u4fee\u6539\*\*")
+FILE_RESPONSE = re.compile(r"Excel|xlsx|\.xls|\u6587\u4ef6\u6d41|\u4e8c\u8fdb\u5236\u6d41")
 ERR_CODES = re.compile(r"\u9519\u8bef\u7801\s*[\uff1a:]?\s*((?:\d{3,6}(?:\s*[\u2013\u2014~\uff5e\-\u81f3\u5230]\s*\d{3,6})?(?:\s*[\u3001,\uff0c/\u548c\u53ca]\s*|\s+)?)+)")
 TIME_FMT = re.compile(r"yyyy[-/.]?MM[-/.]?dd(?:[ T]HH:mm(?::ss)?)?")
 NUM = r"-?\d+(?:\.\d+)?"
@@ -593,6 +596,16 @@ DATETIME = {"LocalDateTime", "Date", "Timestamp", "ZonedDateTime", "OffsetDateTi
 DATE_ONLY = {"LocalDate"}
 LISTS = {"List", "ArrayList", "LinkedList", "Set", "HashSet", "LinkedHashSet", "TreeSet", "Collection", "Iterable"}
 MAPS, VOID, ANY = {"Map", "HashMap", "LinkedHashMap", "TreeMap"}, {"Void", "void"}, {"Object", "JsonNode", "JSONObject"}
+
+
+def api_status(text):
+    """'\uff08\u4fee\u6539\uff1a\u65b0\u589e\u7528\u5238\u53c2\u6570\uff09' -> 'existing', '\uff08\u65b0\u589e\uff09' -> 'new', None if it does not say. The first of
+    \u65b0\u589e/\u4fee\u6539/\u4e0d\u53d8/\u590d\u7528/\u6cbf\u7528 inside parentheses decides."""
+    for part in re.findall(r"[\uff08(]([^\uff09)]*)[\uff09)]", text.replace("*", "")):
+        m = re.search(r"\u65b0\u589e|\u4fee\u6539|\u4e0d\u53d8|\u590d\u7528|\u6cbf\u7528", part)
+        if m:
+            return "new" if m.group(0) == "\u65b0\u589e" else "existing"
+    return None
 
 
 def java_type(text):
@@ -636,9 +649,10 @@ def field_rows(rows):
     out = []
     for r in rows[1:]:
         f = {k: (re.sub(r"<br\s*/?>", "\n", r[i]).strip() if i is not None and i < len(r) else "") for k, i in col.items()}
-        f["name"] = re.sub(r"[`*\s]", "", f["name"])
-        if f["name"]:
-            out.append(f)
+        names = [n for n in re.split(r"\s*[/\u3001,\uff0c]\s*", re.sub(r"[`*]", "", f["name"]).strip()) if n]
+        if len(names) > 1 and not all(re.fullmatch(r"[A-Za-z_$][\w$-]*", n) for n in names):
+            names = [re.sub(r"[`*\s]", "", f["name"])]  # one name that happens to contain a slash
+        out += [dict(f, name=n) for n in names if n]  # 'page/size' is two parameters
     return out
 
 
@@ -709,11 +723,11 @@ def coerce(text, s):
 
 
 def describe(f):
-    parts, req = [f["desc"]], f["required"].strip().strip("*")
+    parts, req, rule = [f["desc"]], f["required"].strip().strip("*"), f["rule"].strip()
     if req and req.lower() not in YES + NO:
         parts.append(req)  # a condition, e.g. required only for one coupon type
-    if f["rule"] and not re.fullmatch(r"\u9ed8\u8ba4(?:\u503c)?(?:\u4e3a)?\s*[\uff1a:]?\s*\S+", f["rule"]):
-        parts.append("\u6821\u9a8c\uff1a" + f["rule"])
+    if rule not in ("", "-", "\u2014", "/", "\u65e0") and not re.fullmatch(r"\u9ed8\u8ba4(?:\u503c)?(?:\u4e3a)?\s*[\uff1a:]?\s*\S+", rule):
+        parts.append("\u6821\u9a8c\uff1a" + rule)
     return "\uff1b".join(p for p in parts if p)
 
 
@@ -737,7 +751,8 @@ def sample(s, f):
     if kind == "boolean":
         return True
     if kind == "string" and not s.get("format") and "pattern" not in s:
-        m = re.search(r"\u5982\s*[\u201c\"\u300c]([^\u201d\"\u300d]+)[\u201d\"\u300d]", f["desc"])
+        m = re.search(r"\u5982\s*[\u201c\"\u300c]([^\u201d\"\u300d]+)[\u201d\"\u300d]", f["desc"]) or re.search(  # an example the text gives
+            r"(?<![\w.\-])([\w.\-]+)\s*(?:\u8868\u793a|\u4ee3\u8868)", f["desc"], re.A)
         text = m.group(1) if m else re.split(r"[\uff0c,\uff1b;\u3002\uff08(\uff1a:\n]", f["desc"])[0].strip() or f["name"]
         return text[:s["maxLength"]] if "maxLength" in s else text
     return None
@@ -758,16 +773,19 @@ def time_schema(fmt, date_only):
 
 
 class ApiDesign:
-    """Section 2.3 \u63a5\u53e3\u8bbe\u8ba1 of a design doc -> OpenAPI 3.0 for Apifox and Postman. It reads the API
-    headings `METHOD /path` and the tables after the lines \u8bf7\u6c42\u5934 / \u8def\u5f84\u53c2\u6570 / \u67e5\u8be2\u53c2\u6570 / \u8bf7\u6c42\u4f53 `T` /
-    \u54cd\u5e94 `T` / \u7ed3\u6784 `T`. Whatever it cannot read becomes a finding, never a guess."""
+    """Section 2.3 \u63a5\u53e3\u8bbe\u8ba1 of a design doc -> OpenAPI 3.0 for Apifox and Postman. An API starts at a heading
+    or paragraph that opens with `METHOD /path`; its parameters and fields are the tables after the lines
+    \u8bf7\u6c42\u5934 / \u8def\u5f84\u53c2\u6570 / \u67e5\u8be2\u53c2\u6570 / \u8bf7\u6c42\u53c2\u6570 / \u8bf7\u6c42\u4f53 `T` / \u54cd\u5e94 `T` / \u7ed3\u6784 `T`. APIs marked \u4fee\u6539/\u4e0d\u53d8/\u590d\u7528
+    already exist and are not exported. Whatever it cannot read becomes a finding, never a guess."""
 
     def __init__(self, md, stem):
         bl = blocks(md)
         self.stem, self.issues, self.notes, self.apis, self.labels = stem, [], [], [], []
         self.listed, self.codes, self.generic, self.named, self.fallback = {}, {}, {}, {}, set()
-        self.title = next((b[2] for b in bl if b[0] == "h" and b[1] == 1), stem).strip()
-        self.feature = re.sub(r"\s*\u8be6\u7ec6\u8bbe\u8ba1.*$", "", self.title) or self.title
+        m = re.match(r"(.+?)-\u8be6\u7ec6\u8bbe\u8ba1", stem)  # the skill names its files <feature>-<detailed design>[-v0.2]
+        titles = [b[2].strip() for b in bl if b[0] == "h" and b[1] == 1 and not re.match(r"\u7b2c\S{1,3}\u90e8\u5206", b[2])]
+        self.title = titles[0] if titles else (m.group(1) + " \u8be6\u7ec6\u8bbe\u8ba1" if m else stem)
+        self.feature = m.group(1) if m else (re.sub(r"\s*\u8be6\u7ec6\u8bbe\u8ba1.*$", "", self.title) or self.title)
         self.version = next((r[1].strip() for b in bl if b[0] == "table" for r in b[1][1:]
                              if len(r) > 1 and r[0].strip("* ") == "\u7248\u672c"), "") or "v1"
         start = next((i for i, b in enumerate(bl) if b[0] == "h" and "\u63a5\u53e3\u8bbe\u8ba1" in b[2]), None)
@@ -793,19 +811,42 @@ class ApiDesign:
 
     # ---- reading the section
 
+    def new_api(self, name, method, path, status):
+        a = {"name": name, "method": method.lower(), "path": path, "status": status, "params": [], "body": None,
+             "resp": None, "legacy_resp": None, "codes": [], "notes": [], "loose": []}
+        self.apis.append(a)
+        return a
+
+    @staticmethod
+    def declaration(text):
+        """'`GET /a`\uff08\u65b0\u589e\uff09' or '`POST /a` / `GET /b`\uff08\u4fee\u6539\uff09\uff1a\u8bf4\u660e' -> ([(method, path)], status, rest);
+        None when the paragraph does not open with APIs."""
+        apis, pos = [], 0
+        while True:
+            m = API_DECL.match(text, pos)
+            if not m:
+                break
+            apis.append((m.group(1), m.group(2)))
+            pos = m.end()
+            sep = re.compile(r"\s*(?:/|\u3001|\uff0c|,|\u548c|\u53ca)\s*").match(text, pos)
+            if not (sep and API_DECL.match(text, sep.end())):
+                break
+            pos = sep.end()
+        m = re.compile(r"\s*([\uff08(][^\uff09)]*[\uff09)])?\s*(?:[\uff1a:]\s*(.*)|$)", re.S).match(text, pos) if apis else None
+        return (apis, api_status(m.group(1) or ""), (m.group(2) or "").strip()) if m else None
+
     def parse(self, sec):
-        cur, level, pending = None, 0, None
+        group, level, depth, pending = [], 0, 0, None
         for k, b in enumerate(sec):
             nxt = sec[k + 1] if k + 1 < len(sec) else ("",)
             if b[0] == "h":
                 m = API_HEAD.match(b[2])
                 if m:
-                    cur, level = {"name": m.group(1).strip(" *"), "method": m.group(2).lower(), "path": m.group(3),
-                                  "modified": bool(MODIFIED.search(m.group(4))), "params": [], "body": None,
-                                  "resp": None, "codes": [], "notes": []}, b[1]
-                    self.apis.append(cur)
-                elif cur is not None and b[1] <= level:
-                    cur = None
+                    group, level = [self.new_api(m.group(1).strip(" *"), m.group(2), m.group(3),
+                                                 api_status(m.group(4)))], b[1]
+                elif b[1] <= level:
+                    group = []
+                depth = b[1]
                 continue
             if b[0] == "table":
                 rows = b[1]
@@ -816,28 +857,37 @@ class ApiDesign:
                 head = [re.sub(r"[*\s]", "", c) for c in rows[0]]
                 if head[0] == "\u63a5\u53e3":
                     for r in rows[1:]:
-                        m = re.search(r"`(GET|POST|PUT|DELETE|PATCH)\s+(/[^`\s]*)`", r[0], re.I)
+                        m = re.search(r"`?(GET|POST|PUT|DELETE|PATCH)\s+(/[^`\s]*)`?", r[0], re.I)
                         if m:
                             self.listed[(m.group(1).lower(), m.group(2))] = dict(zip(head, r))
                 elif head[0] == "\u9519\u8bef\u7801":
                     for r in rows[1:]:
                         if re.fullmatch(r"\d{3,6}", r[0].strip()):
                             self.codes[int(r[0])] = r[1].strip() if len(r) > 1 else ""
-                elif cur is not None and field_rows(rows) is not None:
-                    self.issue(cur, "a table has no \u8bf7\u6c42\u5934/\u8def\u5f84\u53c2\u6570/\u67e5\u8be2\u53c2\u6570/\u8bf7\u6c42\u4f53/\u54cd\u5e94 line right before it")
+                elif field_rows(rows) is not None:
+                    for a in group:
+                        a["loose"].append("a table has no \u8bf7\u6c42\u5934/\u8def\u5f84\u53c2\u6570/\u67e5\u8be2\u53c2\u6570/\u8bf7\u6c42\u4f53/\u54cd\u5e94 line right before it")
                 continue
             if b[0] == "p":
                 m = API_LABEL.match(b[1])
                 if m:
-                    label = (m.group(1), m.group(2), ERR_CODES.sub("", m.group(3) or "").strip(), cur)
+                    label = (m.group(1), m.group(2), m.group(3) or "", ERR_CODES.sub("", m.group(4) or "").strip(),
+                             list(group))
                     if nxt[0] == "table":
                         pending = label
                     else:
                         self.labels.append(label + (None,))
-                    if cur is not None:
-                        cur["codes"] += codes_in(b[1])
+                    for a in group:
+                        a["codes"] += codes_in(b[1])
                     continue
-                text = b[1]
+                d = self.declaration(b[1])
+                if d:  # an API written as a paragraph instead of a heading
+                    group, level = [self.new_api("", mth, path, d[1]) for mth, path in d[0]], depth
+                    if not d[2]:
+                        continue
+                    text = d[2]
+                else:
+                    text = b[1]
             elif b[0] == "li":
                 text = "  " * b[1] + ("- " if b[2] in "-*+" else b[2] + " ") + b[3]
             elif b[0] == "quote":
@@ -847,31 +897,39 @@ class ApiDesign:
             else:
                 continue
             if re.fullmatch(r"\*\*[^*]+\*\*\s*[\uff1a:]?", text):
-                continue
-            if cur is None:
+                continue  # a bold caption belongs to the table below it
+            if not group:
                 self.notes.append(text)
                 continue
-            cur["codes"] += codes_in(text)
-            m = re.search(r"\u54cd\u5e94\s*`([^`]+)`", text)
-            if m and b[0] == "p" and not any(x[0] == "\u54cd\u5e94" and x[3] is cur for x in self.labels):
-                self.labels.append(("\u54cd\u5e94", m.group(1), "", cur, None))
-            m = re.search(r"\u8bf7\u6c42\u5934|\u8def\u5f84\u53c2\u6570|\u67e5\u8be2\u53c2\u6570", text)
-            if m:
-                self.issue(cur, "%s are written in a sentence; put them in a table after a line '%s\uff1a'"
-                           % (m.group(0), m.group(0)))
-            if ERR_CODES.sub("", text).strip(" \u3002.\uff1b;\uff0c,") or b[0] != "p":
-                cur["notes"].append(text)
+            for a in group:
+                a["codes"] += codes_in(text)
+                if b[0] in ("p", "li"):
+                    for m in re.finditer(r"\u54cd\u5e94\s*(?:`([^`]+)`|([A-Z][a-z]\w*(?:<[^>\uff0c\u3002\uff1b\s]*>+)?))", text):
+                        found = (0 if m.group(1) else 1, m.group(1) or m.group(2))  # `Class` beats a bare word
+                        if a["legacy_resp"] is None or found[0] < a["legacy_resp"][0]:
+                            a["legacy_resp"] = found
+                    m = re.search(r"\u8bf7\u6c42\u5934|\u8def\u5f84\u53c2\u6570|\u67e5\u8be2\u53c2\u6570|\u8bf7\u6c42\u53c2\u6570|\u5165\u53c2", text)
+                    if m:
+                        a["loose"].append("%s are written in a sentence; put them in a table after a line '%s\uff1a'"
+                                          % (m.group(0), m.group(0)))
+                if ERR_CODES.sub("", text).strip(" \u3002.\uff1b;\uff0c,") or b[0] != "p":
+                    a["notes"].append(text)
         for a in self.apis:
             row = self.listed.get((a["method"], a["path"]), {})
-            if MODIFIED.search(" ".join(row.values())) or row.get("\u53d8\u66f4\u7c7b\u578b", "").strip("* ") == "\u4fee\u6539":
-                a["modified"] = True
-        for label, typ, rest, api, rows in self.labels:
-            where = api or ("\u7ed3\u6784 `%s`" % typ if label == "\u7ed3\u6784" else "\u63a5\u53e3\u8bbe\u8ba1")
+            a["existing"] = (a["status"] or self.listed_status(row)) == "existing"
+            if not a["name"]:
+                a["name"] = re.sub(r"[\uff08(][^\uff09)]*[\uff09)]", "", row.get("\u8bf4\u660e", "")).strip("* ") or self.where(a)
+        for label, typ, paren, rest, group, rows in self.labels:
+            kind = LABEL_KIND.get(label, "resp")
+            if not typ:  # the class may sit in parentheses after the label
+                m = re.search(r"[A-Z][A-Za-z0-9_]*(?:<[^>\uff08\uff09()]*>)?", paren)
+                typ = m.group(0) if m else None
+            where = group[0] if group else ("\u7ed3\u6784 `%s`" % typ if kind == "struct" else "\u63a5\u53e3\u8bbe\u8ba1")
             fields = field_rows(rows) if rows else None
             if rows and fields is None:
                 self.issue(where, "the table after '%s' needs the columns \u5b57\u6bb5 (or \u53c2\u6570) and \u7c7b\u578b" % label)
                 continue
-            if label == "\u7ed3\u6784":
+            if kind == "struct":
                 node = java_type(typ or "")
                 if node is None or not fields:
                     self.issue(where, "\u7ed3\u6784 needs a class name in backticks and a field table")
@@ -879,23 +937,36 @@ class ApiDesign:
                     self.generic[node[0]] = ([a[0] for a in node[1]], fields)
                 else:
                     self.define(node[0], fields, where)
-            elif api is None:
-                self.issue(where, "'%s' is not under an API heading `METHOD /path`" % label)
-            elif label in API_IN:
-                if fields is None:
-                    self.issue(api, "%s has no table" % label)
-                api["params"] += [(API_IN[label], f) for f in fields or []]
-            else:
-                api["body" if label == "\u8bf7\u6c42\u4f53" else "resp"] = (typ, fields, rest)
-        for a in self.apis:  # a table after a body/response line describes the innermost class of its type
-            for slot in ("body", "resp"):
-                if a[slot] and a[slot][0] and a[slot][1] and not a["modified"]:
+                continue
+            if not group:
+                self.issue(where, "'%s' is not under an API (a heading or a paragraph starting with `METHOD /path`)"
+                           % label)
+            for a in group:
+                k = kind if kind != "params" else ("query" if a["method"] in ("get", "delete") else "body")
+                if k in API_IN:
+                    if fields is None:
+                        a["loose"].append("%s has no table" % label)
+                    a["params"] += [(k, f) for f in fields or []]
+                else:
+                    a[k] = (typ, fields, rest)
+        for a in self.apis:
+            if a["resp"] is None and a["legacy_resp"]:  # the response class was only named in a sentence
+                a["resp"] = (a["legacy_resp"][1], None, "")
+            for slot in ("body", "resp"):  # a table after a body/response line describes the innermost class of its type
+                if a[slot] and a[slot][0] and a[slot][1] and not a["existing"]:
                     node = java_type(a[slot][0])
                     own = self.own_types(node) if node else []
                     if not own:
                         self.issue(a, "`%s` has no class of its own for the table to describe" % a[slot][0])
                     else:
                         self.define(own[-1], a[slot][1], a)
+
+    @staticmethod
+    def listed_status(row):
+        change = row.get("\u53d8\u66f4\u7c7b\u578b", "").strip("* ")
+        if change:
+            return "new" if change == "\u65b0\u589e" else "existing"
+        return api_status(" ".join(row.values()))
 
     def known(self, name):
         return (name in JAVA or name in DATETIME or name in DATE_ONLY or name in LISTS or name in MAPS
@@ -955,7 +1026,8 @@ class ApiDesign:
             return {"$ref": "#/components/schemas/" + name}
         if len(name) == 1 and name.isupper():
             return {}
-        self.issue(where, "class %s has no field table; describe it with '\u7ed3\u6784 `%s`\uff1a' or where it is returned" % (name, name))
+        self.issue(where, "class %s has no field table: add one after the line that returns it, or as '\u7ed3\u6784 `%s`\uff1a'. "
+                          "If the class already exists, copy its fields from the code" % (name, name))
         return {"type": "object"}
 
     def field_schema(self, f, env, where):
@@ -1023,10 +1095,15 @@ class ApiDesign:
             elif m:
                 s.setdefault("minimum", number(m.group(1), kind))
                 s.setdefault("maximum", number(m.group(2), kind))
-            for rx, k in ((r"(?:\u2265|>=|\u4e0d\u5c0f\u4e8e)\s*(" + NUM + ")", "minimum"), (r"(?:\u2264|<=|\u4e0d\u5927\u4e8e)\s*(" + NUM + ")", "maximum")):
+            for rx, k, strict in ((r"(?:\u2265|>=|\u4e0d\u5c0f\u4e8e)\s*(" + NUM + ")", "minimum", None),
+                                  (r"(?:\u2264|<=|\u4e0d\u5927\u4e8e)\s*(" + NUM + ")", "maximum", None),
+                                  (r"(?:(?<![<>=])>(?!=)|\uff1e|\u5927\u4e8e)\s*(" + NUM + ")", "minimum", "exclusiveMinimum"),
+                                  (r"(?:(?<![<>=])<(?!=)|\uff1c|\u5c0f\u4e8e)\s*(" + NUM + ")", "maximum", "exclusiveMaximum")):
                 m = re.search(rx, rule)
-                if m and kind != "string":
-                    s.setdefault(k, number(m.group(1), kind))
+                if m and kind != "string" and k not in s:
+                    s[k] = number(m.group(1), kind)
+                    if strict:
+                        s[strict] = True
             m = re.search(r"(\d)\s*\u4f4d\u5c0f\u6570", rule)
             if m and kind == "number":
                 s.setdefault("multipleOf", 10 ** -int(m.group(1)))
@@ -1034,6 +1111,13 @@ class ApiDesign:
                 and node[0] in JAVA and re.search(r"(Time|Date|At)$", f["name"])):
             self.issue(self.cur_where, "%s looks like a time: write its format in \u6821\u9a8c (e.g. `yyyy-MM-dd HH:mm:ss`) "
                                        "or type it LocalDateTime" % f["name"])
+        m = re.search(r"\u2208\s*[{\uff5b\[]([^}\uff5d\]]+)[}\uff5d\]]", rule)  # set notation: the element-of sign followed by {03,02}
+        if m and kind in ("integer", "string") and "enum" not in s:
+            vals = [v.strip().strip("'\"`") for v in re.split(r"[,\uff0c\u3001/|]", m.group(1)) if v.strip()]
+            if kind == "integer" and all(re.fullmatch(r"-?\d+", v) for v in vals):
+                vals = [int(v) for v in vals]
+            if kind == "string" or all(isinstance(v, int) for v in vals):
+                s["enum"] = vals
         if kind in ("integer", "string") and "enum" not in s:
             for text in (rule, enum_text(desc)):
                 e = (int_enum if kind == "integer" else str_enum)(text) if text else None
@@ -1115,12 +1199,18 @@ class ApiDesign:
                 if a["body"][2]:
                     op["requestBody"]["description"] = a["body"][2]
         resp = {"description": "\u6210\u529f"}
-        if a["resp"]:
+        said = " ".join(a["notes"] + ([a["resp"][2]] if a["resp"] else []))
+        if a["resp"] and (a["resp"][0] or a["resp"][1]):
             s = self.payload(a["resp"], a)
             if a["resp"][2]:
                 resp["description"] = a["resp"][2]
             if s is not None:
                 resp["content"] = {"application/json": {"schema": s}}
+        elif FILE_RESPONSE.search(said):  # an export: the response is the file
+            resp = {"description": "\u6587\u4ef6\u4e0b\u8f7d", "content": {"application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}}}}
+        elif a["resp"] and a["resp"][2]:
+            resp["description"] = a["resp"][2]
         else:
             self.issue(a, "no \u54cd\u5e94 line, e.g. '\u54cd\u5e94 `Result<Void>`\u3002'")
         op["responses"] = {"200": resp}
@@ -1128,7 +1218,8 @@ class ApiDesign:
 
     def build(self):
         if not self.apis:
-            self.issue("\u63a5\u53e3\u8bbe\u8ba1", "no API heading like '#### \u521b\u5efa\u4f18\u60e0\u5238 `POST /api/v1/coupons`'")
+            self.issue("\u63a5\u53e3\u8bbe\u8ba1", "no API found: start each API with a heading like "
+                                   "'#### \u521b\u5efa\u4f18\u60e0\u5238 `POST /api/v1/coupons`'")
         seen = set()
         for a in self.apis:
             key = (a["method"], a["path"])
@@ -1137,56 +1228,78 @@ class ApiDesign:
             seen.add(key)
             if self.listed and key not in self.listed:
                 self.issue(a, "missing from the \u63a5\u53e3\u6e05\u5355 table")
-        for m, p in self.listed:
-            if (m, p) not in seen:
-                self.issue("%s %s" % (m.upper(), p), "listed in \u63a5\u53e3\u6e05\u5355 but has no heading in \u63a5\u53e3\u8be6\u60c5")
+            if a["existing"]:
+                continue
+            for x in a["loose"]:
+                self.issue(a, x)
+            if not a["params"] and not a["body"] and re.search(r"\u540c\u6761\u4ef6|\u540c\u4e0a|\u53c2\u6570\u540c|\u4e0e.{0,15}(\u76f8\u540c|\u4e00\u81f4)",
+                                                                    " ".join(a["notes"])):
+                self.issue(a, "its parameters are only referred to ('\u540c\u6761\u4ef6'/'\u540c\u4e0a'); repeat them in a table")
+        for (m, p), row in self.listed.items():
+            if (m, p) not in seen and self.listed_status(row) != "existing":
+                self.issue("%s %s" % (m.upper(), p), "listed in \u63a5\u53e3\u6e05\u5355 but not described in \u63a5\u53e3\u8be6\u60c5")
         schemas = {name: self.object_schema(fields, {}, name) for name, fields in list(self.named.items())}
         paths, tags = {}, []
         for a in self.apis:
-            if a["modified"]:
+            if a["existing"]:
                 continue
             op = self.operation(a)
             paths.setdefault(a["path"], {})[a["method"]] = op
             tags += [t for t in op["tags"] if t not in tags]
-        skipped = [self.where(a) for a in self.apis if a["modified"]]
         intro = ["\u7531\u8be6\u7ec6\u8bbe\u8ba1\u300a%s\u300b\u7684\u201c\u63a5\u53e3\u8bbe\u8ba1\u201d\u5bfc\u51fa\u3002\u63a5\u53e3\u7ea6\u5b9a\u4ee5\u8bc4\u5ba1\u786e\u8ba4\u7684 Word \u4e3a\u51c6\uff0c\u6807\u6709\u3010\u5047\u8bbe\u3011\u3010\u5f85\u786e\u8ba4\u3011\u7684\u5185\u5bb9"
                  "\u53ef\u80fd\u968f\u8bc4\u5ba1\u7b54\u590d\u53d8\u5316\u3002" % self.stem] + self.notes
         if self.codes:
             intro.append("\u9519\u8bef\u7801\uff1a\n\n" + "\n".join(("- %d %s" % kv).rstrip() for kv in sorted(self.codes.items())))
-        if skipped:
-            intro.append("\u672a\u5bfc\u51fa\u7684\u4fee\u6539\u63a5\u53e3\uff08\u8bbe\u8ba1\u91cc\u53ea\u5217\u4e86\u65b0\u589e\u5b57\u6bb5\uff0c\u5bfc\u5165\u4f1a\u8986\u76d6\u5df2\u6709\u7684\u5b8c\u6574\u5b9a\u4e49\uff0c\u8bf7\u5728 Apifox \u6216 Postman \u91cc"
-                         "\u624b\u5de5\u8865\u4e0a\uff09\uff1a\n\n" + "\n".join("- " + x for x in skipped))
+        if self.skipped():
+            intro.append("\u672a\u5bfc\u51fa\u7684\u5df2\u6709\u63a5\u53e3\uff08\u4fee\u6539\u6216\u4e0d\u53d8\u7684\u63a5\u53e3\uff0c\u8bbe\u8ba1\u91cc\u53ea\u5199\u4e86\u6539\u52a8\u90e8\u5206\uff0c\u5bfc\u5165\u4f1a\u8986\u76d6\u5de5\u5177\u91cc\u5df2\u6709\u7684\u5b8c\u6574\u5b9a\u4e49\uff0c"
+                         "\u6539\u52a8\u8bf7\u5728 Apifox \u6216 Postman \u91cc\u624b\u5de5\u8865\u4e0a\uff09\uff1a\n\n" + "\n".join("- " + x for x in self.skipped()))
         doc = {"openapi": "3.0.3", "info": {"title": self.title, "version": self.version, "description": "\n\n".join(intro)},
                "tags": [{"name": t} for t in tags], "paths": paths}
         if schemas:
             doc["components"] = {"schemas": schemas}
         return doc
 
+    def skipped(self):
+        """Existing APIs (\u4fee\u6539/\u4e0d\u53d8/\u590d\u7528): described or only listed, they are not exported."""
+        out = [self.where(a) for a in self.apis if a["existing"]]
+        return out + ["%s %s" % (m.upper(), p) for (m, p), row in self.listed.items()
+                      if self.listed_status(row) == "existing" and "%s %s" % (m.upper(), p) not in out]
+
     def report(self):
-        skipped = [self.where(a) for a in self.apis if a["modified"]]
-        note = (", %d \u4fee\u6539 not exported (%s)" % (len(skipped), ", ".join(skipped))) if skipped else ""
-        print("[api] %d APIs: %d to export%s%s" % (len(self.apis), len(self.apis) - len(skipped), note,
-                                                    "" if self.issues else " -- ok"))
+        n = sum(len(v) for v in self.doc["paths"].values())
+        skipped = self.skipped()
+        note = (", %d existing (\u4fee\u6539/\u4e0d\u53d8) not exported: %s" % (len(skipped), ", ".join(skipped))) if skipped else ""
+        print("[api] %d to export%s%s" % (n, note, "" if self.issues else " -- ok"))
         for x in self.issues:
             print("  ! api " + x)
 
 
 def api_export(md, stem, out_dir=None):
-    """Check the API design; with out_dir, also write <stem>.openapi.json there."""
+    """Check the API design; with out_dir, also write <stem>.openapi.json there. False when an export was
+    asked for and nothing could be exported."""
     api = ApiDesign(md, stem)
     if not api.found:
         if out_dir:
             print("[api] no \u63a5\u53e3\u8bbe\u8ba1 section, nothing to export")
-        return
+        return not out_dir
     api.report()
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, stem + ".openapi.json")
-        with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(api.doc, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
-        n = sum(len(v) for v in api.doc["paths"].values())
-        print("wrote %s  (%d APIs, %d schemas)" % (slash(path), n, len(api.doc.get("components", {}).get("schemas", {}))))
+    if not out_dir:
+        return True
+    n = sum(len(v) for v in api.doc["paths"].values())
+    if not n:
+        print("  -> nothing could be exported, so no file was written. Rewrite section 2.3.2 in the table format "
+              "(SKILL.md: Exporting the API contract) and export again")
+        return False
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, stem + ".openapi.json")
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(api.doc, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    print("wrote %s  (%d APIs, %d schemas)" % (slash(path), n, len(api.doc.get("components", {}).get("schemas", {}))))
+    if api.issues:
+        print("  -> the file is incomplete: fix the findings above in section 2.3.2 (SKILL.md: Exporting the API "
+              "contract), convert, and export again")
+    return True
 
 
 # --------------------------------------------------------------------------- reading
@@ -1416,7 +1529,8 @@ def main():
                     else:
                         with tempfile.TemporaryDirectory() as td:
                             md = open(read_docx(f, td)[0], encoding="utf-8").read()
-                    api_export(md, stem, args.out_dir or os.path.dirname(os.path.abspath(f)))
+                    if not api_export(md, stem, args.out_dir or os.path.dirname(os.path.abspath(f))):
+                        failed = True
                 continue
             out_dir = args.out_dir or os.path.dirname(os.path.abspath(f))
             os.makedirs(out_dir, exist_ok=True)
@@ -1429,8 +1543,8 @@ def main():
                 continue
             design = trace_check(md)
             print(f"wrote {slash(out)}" + (f", diagrams {ok}/{n}" if n else ""))
-            if design or args.openapi:
-                api_export(md, stem, out_dir if args.openapi else None)
+            if (design or args.openapi) and not api_export(md, stem, out_dir if args.openapi else None):
+                failed = True
     except BrokenPipeError:  # output piped into `head`; files are already written
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     sys.exit(1 if failed else 0)

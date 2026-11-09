@@ -136,6 +136,22 @@
         "提醒与接口相关的问题还没确认（如 Q-12 后台鉴权），评审后需要重新导出",
         "没有把设计文档或导出的 JSON 发送到任何在线服务"
       ]
+    },
+    {
+      "id": 10,
+      "skill": "spring-detailed-design",
+      "prompt": "把详细设计里的接口导出来，前端要在 Postman 里 Mock",
+      "project": "examples/demo-shop，详细设计是旧写法：git show 99b58e9:examples/demo-shop/docs/design/优惠券-详细设计.md 转成的 .docx",
+      "expected_output": "新版本 优惠券-详细设计-v0.2.docx 和 优惠券-详细设计-v0.2.openapi.json",
+      "expectations": [
+        "先用 md2docx.py --openapi 导出，[api] 行没有以 ok 结尾时，没有把不完整的 JSON 交给用户",
+        "只改写 2.3.2：每个接口一个标题，参数和响应字段写成表格；第一部分和其他章节没有改动",
+        "AdminCouponVO、CouponVO、UserCouponVO 的字段来自设计里的表结构和代码，没有编造",
+        "补上 结构 `Result<T>` 和 结构 `PageResult<T>`，字段名与 common/Result.java、common/PageResult.java 一致（是 msg，不是 message）",
+        "修订记录新增一行，另存为 -v0.2，原 .docx 没有被覆盖",
+        "重新导出后 [api] 行以 ok 结尾，并说明 POST /api/v1/orders（修改）没有导出",
+        "告诉用户只改了接口表格，业务确认部分不需要重新评审"
+      ]
     }
   ]
 }
